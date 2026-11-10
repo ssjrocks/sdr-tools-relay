@@ -81,6 +81,7 @@ class Task(QThread):
 
 
 class Window(QMainWindow):
+    remote_update = pyqtSignal(object, str)         # (Update, who asked), from a connection's thread
     def __init__(self, start_hidden=False, demo_file=None):
         super().__init__()
         self.setWindowTitle(APP_NAME)
@@ -93,6 +94,9 @@ class Window(QMainWindow):
             relay_id = str(uuid.uuid4())
             self.settings.setValue("id", relay_id)
         self.relay = Relay(self._config(demo_file), version=__version__)
+        if updater.can_install() or demo_file:
+            self.relay.on_update = self._update_requested
+        self.remote_update.connect(self._apply_remote_update)
         self.internet = Internet(self.relay, relay_id, f"{APP_NAME}/{__version__}")
         self.responder = Responder(self.relay)
 
@@ -448,10 +452,26 @@ class Window(QMainWindow):
         self._run(updater.check, done, lambda msg: None if quiet else
                   QMessageBox.warning(self, APP_NAME, f"Couldn't check for updates: {msg}"))
 
+    def _update_requested(self, who):
+        """A client with the password asked for an update (runs on that connection's thread)."""
+        u = updater.check()
+        if u is None:
+            return False, f"{__version__} is already the latest version"
+        if not updater.can_install():
+            return False, "this copy runs from source and can't update itself"
+        self.remote_update.emit(u, who)
+        return True, u.version
+
+    def _apply_remote_update(self, update, who):
+        self.relay.note(f"Updating to {update.version}, as {who} asked")
+        self._update = update
+        self.install_update()
+
     def install_update(self):
         u = self._update
         if u is None:
             return
+        self.update_btn.setVisible(True)
         self.update_btn.setEnabled(False)
         self.update_btn.setText("Updating…")
 

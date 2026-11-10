@@ -32,7 +32,10 @@ It installs the RTL-SDR library and Qt from the distribution, and the app in
 `~/.local/share/sdr-tools-relay`. `scripts/install.sh --uninstall` removes it.
 
 Both versions update themselves from this repository's releases: **Update to …** appears when there
-is one.
+is one. SDR Toolkit can also update a relay it's connected to (its relay button → **Update the
+relay to …**), but only if the relay has a password and SDR Toolkit gave it: a relay without a
+password refuses. Either way the relay installs only this repository's own release, checked
+against its SHA-256, and restarts.
 
 ## Settings
 

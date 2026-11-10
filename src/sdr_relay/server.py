@@ -12,6 +12,7 @@ from . import protocol as P
 from .rtlsdr import FileDongle, RtlError
 
 log = logging.getLogger(__name__)
+CLOSING_WAIT = 5.0             # s a new client waits for the previous one's dongle to close
 QUEUE_BUFFERS = 64            # ~1.5 s at 2.4 MS/s with 64 KB buffers; older data is dropped
 
 
@@ -39,6 +40,7 @@ class Session:
         self.rate = 0
         self.gain = "auto"
         self.rate_bps = 0.0          # recent bytes per second
+        self.closing = False         # the client has gone; the dongle is being closed
 
 
 class Relay:
@@ -46,6 +48,9 @@ class Relay:
         self.config = config
         self.version = version
         self.open_dongle = open_dongle or self._open
+        # Called (from a connection's thread) when a client with the password asks for an update:
+        # returns (True, version being installed) or (False, why not). None: updates not offered.
+        self.on_update = None
         self.session: Session | None = None
         self.last_error = ""
         self.events: collections.deque = collections.deque(maxlen=200)    # (time, text) for the window
@@ -68,7 +73,8 @@ class Relay:
     def hello(self, nonce="") -> dict:
         h = {"relay": "sdr-tools-relay", "protocol": P.PROTOCOL, "name": self.config.name, "version": self.version,
              "devices": self.describe_devices(), "password": bool(self.config.password),
-             "busy": self.session is not None}
+             "busy": self.session is not None,
+             "features": ["check"] + (["update"] if self.on_update is not None else [])}
         if nonce:
             h["nonce"] = nonce
         return h
@@ -120,6 +126,11 @@ class Relay:
         conn.settimeout(10)
         nonce = secrets.token_hex(16)
         try:
+            # A client that has just left may still be closing the dongle (a decoder restarting,
+            # or SDR Toolkit's password check): wait for it rather than turn the next one away.
+            end = time.monotonic() + CLOSING_WAIT
+            while self.session is not None and self.session.closing and time.monotonic() < end:
+                time.sleep(0.05)
             busy = self.session is not None
             conn.sendall(P.line(self.hello(nonce)))
             if busy:
@@ -130,6 +141,13 @@ class Relay:
             if not P.check(self.config.password, nonce, reply.get("auth", "")):
                 conn.sendall(P.line({"ok": False, "error": "wrong password"}))
                 self.note(f"{addr[0]}: wrong password")
+                return
+            if reply.get("update"):
+                conn.sendall(P.line(self._update_request(addr)))
+                return
+            if reply.get("check"):
+                # Only checking the password (SDR Toolkit's Connect): don't open the dongle.
+                conn.sendall(P.line({"ok": True, "ppm": self.config.ppm, "checked": True}))
                 return
             with self._lock:
                 if self.session is not None:
@@ -150,6 +168,19 @@ class Relay:
                 conn.close()
             except OSError:
                 pass
+
+    def _update_request(self, addr) -> dict:
+        if self.on_update is None:
+            return {"ok": False, "error": "this relay can't update itself"}
+        if not self.config.password:
+            return {"ok": False, "error": "updating from SDR Toolkit needs a password set on the relay"}
+        self.note(f"{addr[0]} asked for an update")
+        try:
+            ok, text = self.on_update(addr[0])
+        except Exception as e:  # reported to the client
+            log.exception("update request")
+            ok, text = False, str(e)
+        return {"ok": True, "updating": text} if ok else {"ok": False, "error": text}
 
     @staticmethod
     def _read_line(conn) -> tuple[dict | None, bytes]:
@@ -254,6 +285,7 @@ class Relay:
                     buf = buf[5:]
                     self._command(dongle, session, gains, cmd, value)
             done.set()
+            session.closing = True
             with ready:
                 ready.notify_all()
             dongle.stop()
@@ -269,8 +301,8 @@ class Relay:
             dongle.call("set_center_freq", value)
             session.freq = value
         elif cmd == P.SET_RATE:
+            # Not reset_buffer, as rtl_tcp: resetting a running async read stalls the stream.
             dongle.call("set_sample_rate", value)
-            dongle.call("reset_buffer")
             session.rate = value
         elif cmd == P.SET_GAIN_MODE:
             dongle.call("set_tuner_gain_mode", value)

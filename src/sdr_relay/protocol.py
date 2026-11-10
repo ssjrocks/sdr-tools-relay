@@ -8,7 +8,13 @@ TCP, default port 47320:
    A busy relay (someone is connected) closes the connection after it.
 2. The client answers with one JSON line:
    {"client": "<app>", "version", "auth": HMAC-SHA256(password, nonce) in hex, or ""}
+   With "check": true it only checks the password: the relay answers {"ok": true,
+   "checked": true} and closes without opening the dongle.
 3. The relay answers {"ok": true, "ppm": N} and carries on, or {"ok": false, "error"} and closes.
+   A connection arriving while the previous client's dongle is still closing waits for it.
+   With "update": true (when the hello's "features" has "update") the relay looks for a newer
+   release and, if there is one, answers {"ok": true, "updating": "<version>"}, closes, and
+   installs it (then restarts). Only with the password: a relay without one refuses.
 4. From then on it's rtl_tcp: the relay sends "RTL0", the tuner type and the number of
    gain steps (big-endian u32 each), then unsigned 8-bit IQ; the client sends 5-byte
    commands (a command byte, a big-endian u32).

@@ -268,3 +268,78 @@ def test_finding_dongles_without_winusb():
     plain = driver.parse([{"PNPDeviceID": "USB\\VID_0BDA&PID_2838\\0001", "Name": "RTL", "Service": ""}])
     assert plain[0].iid is None and "--iid" not in driver.command(plain[0], "x")
     assert driver.missing() == []                 # off Windows
+
+
+def test_rate_change_doesnt_reset_the_running_stream(relay):
+    # rtl_tcp never calls rtlsdr_reset_buffer on a rate change: on a running async read it
+    # stops the samples (seen on Windows: 0.0 MB in 61 s after SDR Toolkit set 2.4 MS/s).
+    s, _, ok = connect(relay, "secret")
+    read_exact(s, 12)
+    s.sendall(P.command(P.SET_RATE, 2400000) + P.command(P.SET_FREQ, 1090000000))
+    read_exact(s, 200000)
+    calls = [c[0] for c in relay.dongles[-1].calls]
+    assert "set_sample_rate" in calls and "reset_buffer" not in calls
+    s.close()
+
+
+def test_password_check_doesnt_open_the_dongle(relay):
+    s = socket.create_connection(("127.0.0.1", relay.config.port), timeout=5)
+    hello = read_line(s)
+    s.sendall(P.line({"client": "test", "auth": P.auth("secret", hello["nonce"]), "check": True}))
+    assert read_line(s) == {"ok": True, "ppm": -4, "checked": True} and s.recv(10) == b""
+    assert relay.dongles == [] and relay.session is None
+    s2 = socket.create_connection(("127.0.0.1", relay.config.port), timeout=5)
+    hello = read_line(s2)
+    s2.sendall(P.line({"client": "test", "auth": P.auth("nope", hello["nonce"]), "check": True}))
+    assert read_line(s2)["error"] == "wrong password"
+
+
+def test_next_client_waits_for_the_previous_dongle_to_close(relay, recording):
+    slow = []
+
+    class SlowClose(FileDongle):
+        def close(self):
+            time.sleep(1.5)                          # librtlsdr on Windows takes a while
+            super().close()
+
+    def opener():
+        d = SlowClose(recording)
+        slow.append(d)
+        return d
+
+    relay.open_dongle = opener
+    s, _, ok = connect(relay, "secret")
+    read_exact(s, 12 + 1000)
+    s.close()
+    time.sleep(0.2)                                  # gone, but its dongle is still closing
+    s2, hello, ok2 = connect(relay, "secret")
+    assert not hello["busy"] and ok2["ok"], (hello, ok2)
+    assert read_exact(s2, 12)[:4] == b"RTL0" and len(slow) == 2
+    s2.close()
+
+
+def ask_update(relay, password):
+    s = socket.create_connection(("127.0.0.1", relay.config.port), timeout=5)
+    hello = read_line(s)
+    s.sendall(P.line({"client": "test", "auth": P.auth(password, hello["nonce"]), "update": True}))
+    return hello, read_line(s)
+
+
+def test_update_on_request_needs_the_password(relay):
+    asked = []
+    relay.on_update = lambda who: (asked.append(who), (True, "0.9.0"))[1]
+    hello, answer = ask_update(relay, "secret")
+    assert "update" in hello["features"] and answer == {"ok": True, "updating": "0.9.0"} and asked == ["127.0.0.1"]
+    assert relay.dongles == []                               # nothing streamed
+    _, answer = ask_update(relay, "nope")
+    assert answer["error"] == "wrong password" and len(asked) == 1
+    relay.on_update = lambda who: (False, "0.1.2 is already the latest version")
+    assert ask_update(relay, "secret")[1] == {"ok": False, "error": "0.1.2 is already the latest version"}
+    relay.config.password = ""                               # no password: nobody may
+    relay.on_update = lambda who: (asked.append(who), (True, "0.9.0"))[1]
+    _, answer = ask_update(relay, "")
+    assert "needs a password" in answer["error"] and len(asked) == 1
+    relay.on_update = None
+    relay.config.password = "secret"
+    hello, answer = ask_update(relay, "secret")
+    assert "update" not in hello["features"] and not answer["ok"]

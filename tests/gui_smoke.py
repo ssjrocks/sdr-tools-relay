@@ -73,6 +73,27 @@ results["saved"] = QSettings("ssjrocks", "sdr-tools-relay").value("name") == "Sh
 win.autostart.setChecked(True)
 results["autostart"] = (Path(home) / "config/autostart/sdr-tools-relay.desktop").exists()
 win.autostart.setChecked(False)
+# Update asked for by a client with the password: the window installs it and restarts.
+installed, restarted = [], []
+updater.check = lambda: updater.Update("9.9.9", "https://api.github.com/repos/ssjrocks/sdr-tools-relay/releases/assets/1",
+                                      "x.whl", "0" * 64)
+updater.can_install = lambda: True
+updater.install = lambda u: installed.append(u.version)
+updater.restart = lambda: restarted.append(1)
+c = socket.create_connection(("127.0.0.1", win.relay.config.port), timeout=5)
+hello = b""
+while not hello.endswith(b"\n"):
+    hello += c.recv(1)
+h = json.loads(hello)
+c.sendall(P.line({"client": "smoke", "auth": P.auth("pw", h["nonce"]), "update": True}))
+answer = b""
+while not answer.endswith(b"\n"):
+    answer += c.recv(1)
+for _ in range(40):
+    app.processEvents()
+    time.sleep(0.05)
+results["remote_update"] = ("update" in h["features"] and json.loads(answer) == {"ok": True, "updating": "9.9.9"}
+                            and installed == ["9.9.9"] and restarted == [1])
 if len(sys.argv) > 1:
     win.grab().save(sys.argv[1])
 win.quit()

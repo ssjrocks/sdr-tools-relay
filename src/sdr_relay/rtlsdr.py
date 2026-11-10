@@ -131,13 +131,16 @@ class Dongle:
         """Stream into *on_data(bytes)* from a thread until stop().
 
         "async" is librtlsdr's rtlsdr_read_async (what rtl_tcp uses), "sync" a loop of
-        rtlsdr_read_sync (what rtl_sdr -S and pyrtlsdr use). "auto" starts async and, if no
-        samples arrive within 3 s, switches to sync: on a Windows PC async gave none at all.
+        rtlsdr_read_sync (what rtl_sdr -S and pyrtlsdr use). "auto" is async, with a warning in
+        the log if no samples arrive within 3 s. Not sync: librtlsdr's sync read has no timeout,
+        so on a dongle that sends nothing it never returns and the dongle stays open until the
+        relay restarts (seen on a Windows PC where neither read got samples).
         """
         self.call("reset_buffer")
         self._halt = threading.Event()
         self.method = "async" if method in ("auto", "async") else "sync"
         self.received = 0
+        self.no_samples = False
         self.last_result = None
         self.callback_error = ""
 
@@ -177,18 +180,9 @@ class Dongle:
         def watchdog():
             if self._halt.wait(3.0) or self.received:
                 return
-            log.warning("no samples from rtlsdr_read_async in 3 s (callback error: %s): switching to "
-                        "rtlsdr_read_sync", self.callback_error or "none")
-            self.lib.rtlsdr_cancel_async(self.dev)
-            t = self._thread
-            if t is not None:
-                t.join(3)
-            if self._halt.is_set():
-                return
-            self.call("reset_buffer")
-            self.method = "sync"
-            self._thread = threading.Thread(target=run_sync, daemon=True, name="dongle-sync")
-            self._thread.start()
+            self.no_samples = True
+            log.warning("no samples from the dongle in 3 s (rtlsdr_read_async, callback error: %s)",
+                        self.callback_error or "none")
 
         target = run_async if self.method == "async" else run_sync
         self._thread = threading.Thread(target=target, daemon=True, name=f"dongle-{self.method}")

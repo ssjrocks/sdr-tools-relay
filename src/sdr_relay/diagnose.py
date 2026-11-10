@@ -1,9 +1,11 @@
 """A dongle check a client with the password can ask for ({"diagnose": true}).
 
-It tries each way of reading samples for 2 seconds at 1090 MHz, 2.4 MS/s: librtlsdr's
-rtlsdr_read_async and rtlsdr_read_sync through this app, and the RTL-SDR Blog's own
-rtl_sdr program (bundled on Windows) in its async and -S sync modes. Which of them get
-samples tells a broken dongle or driver from a problem in the relay.
+It reads samples for 2 seconds at 1090 MHz, 2.4 MS/s with the RTL-SDR Blog's own rtl_sdr
+program (bundled on Windows), in its async and -S sync modes, then with librtlsdr's
+rtlsdr_read_async through this app. If rtl_sdr gets samples and the app doesn't, the
+problem is in the relay; if neither does, it's the dongle, its USB connection or driver.
+rtl_sdr goes first, and is killed if it hangs, which frees the dongle; this app's sync read
+isn't tried, because it can't be interrupted when no samples come.
 """
 
 import logging
@@ -77,10 +79,9 @@ def run(index=0) -> dict:
         report["devices"] = devices()
     except RtlError as e:
         report["devices"] = str(e)
-    for name, fn in (("librtlsdr async", lambda: through_librtlsdr(index, "async")),
-                     ("librtlsdr sync", lambda: through_librtlsdr(index, "sync")),
-                     ("rtl_sdr", lambda: through_rtl_sdr(index, False)),
-                     ("rtl_sdr -S", lambda: through_rtl_sdr(index, True))):
+    for name, fn in (("rtl_sdr", lambda: through_rtl_sdr(index, False)),
+                     ("rtl_sdr -S", lambda: through_rtl_sdr(index, True)),
+                     ("librtlsdr async", lambda: through_librtlsdr(index, "async"))):
         try:
             report[name] = fn()
         except Exception as e:  # part of the report

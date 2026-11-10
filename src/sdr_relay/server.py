@@ -289,6 +289,13 @@ class Relay:
                 done.set()
 
             dongle.start(on_data)
+
+            def no_samples_note():
+                if getattr(dongle, "no_samples", False) and not done.is_set():
+                    self.note("The dongle sends no samples. Try another USB port (a rear one, no hub or "
+                              "extension cable) or replug it; the dongle check in SDR Toolkit's relay menu "
+                              "says more.")
+            threading.Timer(4.0, no_samples_note).start()
             t = threading.Thread(target=sender, daemon=True, name="relay-send")
             t.start()
             buf = rest

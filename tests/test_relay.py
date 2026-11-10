@@ -388,20 +388,23 @@ def fake_dongle(lib):
     return d
 
 
-def test_dongle_falls_back_to_sync_reads_when_async_gives_nothing():
+def test_dongle_that_sends_nothing_is_flagged_not_hung():
+    # Seen on a Windows PC: neither async nor sync reads got samples, and the sync read then
+    # never returned, holding the dongle. So no sync fallback: async, and a warning.
     lib = FakeLib(async_works=False)
     d = fake_dongle(lib)
     got = []
     d.start(got.append, buf_len=4096)
-    time.sleep(4.0)
-    assert d.method == "sync" and lib.cancelled and lib.sync_reads > 10 and got and got[0] == b"\x55" * 4096
+    time.sleep(3.5)
+    assert d.no_samples and d.method == "async" and lib.sync_reads == 0 and not got
     d.close()
+    assert lib.cancelled
     ok = FakeLib(async_works=True)
     d2 = fake_dongle(ok)
     got2 = []
     d2.start(got2.append, buf_len=4096)
     time.sleep(3.5)
-    assert d2.method == "async" and got2 and ok.sync_reads == 0
+    assert not d2.no_samples and got2 and ok.sync_reads == 0
     d2.close()
 
 

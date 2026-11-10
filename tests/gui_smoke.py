@@ -36,9 +36,19 @@ rec = Path(home) / "demo.cu8"
 rec.write_bytes(bytes(range(256)) * 2048)
 
 app = QApplication([])
+from PyQt6.QtWidgets import QSystemTrayIcon  # noqa: E402
+
+gui.QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: True)      # as on a desktop with a tray
 win = gui.Window(demo_file=str(rec))
 app.processEvents()
-results = {"ready": win.state.text().startswith("Ready") and win.device.count() == 1 and "Password set" in win.detail.text()}
+results_tray = not win.isVisible() and win.tray is not None                  # it starts in the tray
+win.tray.activated.emit(QSystemTrayIcon.ActivationReason.Trigger)            # a single click: still hidden
+app.processEvents()
+results_tray = results_tray and not win.isVisible()
+win.tray.activated.emit(QSystemTrayIcon.ActivationReason.DoubleClick)        # a double-click opens it
+app.processEvents()
+results_tray = results_tray and win.isVisible()
+results = {"starts_in_tray": results_tray, "ready": win.state.text().startswith("Ready") and win.device.count() == 1 and "Password set" in win.detail.text()}
 
 c = socket.create_connection(("127.0.0.1", port), timeout=5)
 hello = b""

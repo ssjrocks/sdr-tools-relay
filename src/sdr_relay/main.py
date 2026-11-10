@@ -18,7 +18,8 @@ def _log_exception(exc_type, exc, tb):
 
 def main():
     ap = argparse.ArgumentParser(prog="sdr-tools-relay")
-    ap.add_argument("--minimized", action="store_true", help="start in the tray")
+    ap.add_argument("--minimized", action="store_true", help="start in the tray (the default; kept for old autostarts)")
+    ap.add_argument("--show", action="store_true", help="open the window as well as the tray icon")
     ap.add_argument("--demo", metavar="FILE.cu8", help="play a recording instead of a dongle")
     ap.add_argument("--self-test", metavar="RESULTS.json", help="check this build works, then exit")
     ap.add_argument("--self-test-driver", action="store_true", help="also install the WinUSB driver package")
@@ -35,7 +36,7 @@ def main():
     sys.excepthook = _log_exception
     appreports.init(APP_ID, APP_NAME, __version__, state_dir(), log_file=log_file)
     from sdr_relay.gui import run
-    sys.exit(run(start_hidden=args.minimized, demo_file=args.demo))
+    sys.exit(run(show=args.show, demo_file=args.demo))
 
 
 if __name__ == "__main__":

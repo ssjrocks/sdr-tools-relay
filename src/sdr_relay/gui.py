@@ -82,7 +82,7 @@ class Task(QThread):
 
 class Window(QMainWindow):
     remote_update = pyqtSignal(object, str)         # (Update, who asked), from a connection's thread
-    def __init__(self, start_hidden=False, demo_file=None):
+    def __init__(self, show=False, demo_file=None):
         super().__init__()
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(make_icon())
@@ -223,17 +223,17 @@ class Window(QMainWindow):
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray = QSystemTrayIcon(make_icon(), self)
             menu = QMenu()
-            show = QAction("Show", self)
-            show.triggered.connect(self.show_window)
+            show_action = QAction("Show", self)
+            show_action.triggered.connect(self.show_window)
             disc = QAction("Disconnect the user", self)
             disc.triggered.connect(self.relay.disconnect)
             quit_ = QAction("Quit", self)
             quit_.triggered.connect(self.quit)
-            for a in (show, disc, quit_):
+            for a in (show_action, disc, quit_):
                 menu.addAction(a)
             self.tray.setContextMenu(menu)
             self.tray.activated.connect(lambda reason: self.show_window()
-                                        if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
+                                        if reason == QSystemTrayIcon.ActivationReason.DoubleClick else None)
             self.tray.show()
         self._quitting = False
         self._told_tray = False
@@ -246,8 +246,16 @@ class Window(QMainWindow):
         self.timer.timeout.connect(self.refresh)
         self.timer.start(1000)
         self.refresh()
-        if not (start_hidden and self.tray):
+        # It lives in the tray and never pops up by itself (at login, after an update or a restart):
+        # double-click the tray icon to open it. Only a desktop without a tray gets the window.
+        if show or self.tray is None:
             self.show()
+        elif not self._bool("told_tray", False):
+            self.settings.setValue("told_tray", True)
+            self._told_tray = True
+            QTimer.singleShot(1500, lambda: self.tray.showMessage(
+                APP_NAME, "Running in the tray. Double-click the icon to open it.",
+                QSystemTrayIcon.MessageIcon.Information, 6000))
         QTimer.singleShot(3000, lambda: self.check_updates(quiet=True) if updater.due() else None)
 
     # ---- settings -----------------------------------------------------
@@ -335,7 +343,12 @@ class Window(QMainWindow):
                                  "Press Install driver (Windows asks for permission).")
         if not self._offered_driver:
             self._offered_driver = True
-            QTimer.singleShot(300, lambda: self.install_driver(ask=True))
+            if self.isVisible():
+                QTimer.singleShot(300, lambda: self.install_driver(ask=True))
+            elif self.tray is not None:
+                # Never pop up the window: a tray notification, and Install driver waits in the window.
+                self.tray.showMessage(APP_NAME, "The RTL-SDR needs its driver. Double-click the tray icon and "
+                                      "press Install driver.", QSystemTrayIcon.MessageIcon.Warning, 10000)
 
     def install_driver(self, ask=True):
         need = self._need_driver
@@ -510,11 +523,11 @@ def _default_name() -> str:
     return f"{socket.gethostname()} RTL-SDR"
 
 
-def run(start_hidden=False, demo_file=None) -> int:
+def run(show=False, demo_file=None) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)
     app.setWindowIcon(make_icon())
-    win = Window(start_hidden, demo_file)
+    win = Window(show, demo_file)
     app.aboutToQuit.connect(lambda: None if win._quitting else win.shutdown())
     return app.exec()

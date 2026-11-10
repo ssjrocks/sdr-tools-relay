@@ -1,0 +1,82 @@
+# Builds the Windows installer for each release, checks it works, and attaches it with
+# sdr-tools-relay-windows.json (version, installer name, SHA-256) for the in-app updater.
+name: Windows build
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python packages
+        run: python -m pip install --upgrade pip pyqt6 pyinstaller pillow
+      - name: RTL-SDR library (rtl-sdr-blog V1.4.0)
+        shell: pwsh
+        run: |
+          gh release download V1.4.0 -R rtlsdrblog/rtl-sdr-blog -p Release.zip -D build
+          $sha = (Get-FileHash build\Release.zip -Algorithm SHA256).Hash.ToLower()
+          if ($sha -ne "7ef33f1304647f65e5e0fde43637a73d54f076e91e651a3cecc4f55a17fd9815") { throw "Release.zip checksum $sha" }
+          Expand-Archive build\Release.zip build\rtlblog
+          New-Item -ItemType Directory build\dlls | Out-Null
+          Copy-Item build\rtlblog\x64\rtlsdr.dll, build\rtlblog\x64\pthreadVC2.dll, build\rtlblog\x64\msvcr100.dll build\dlls\
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Icon
+        run: python -c "from PIL import Image; Image.open('packaging/icon.png').save('build/icon.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+      - name: PyInstaller
+        run: >
+          pyinstaller --noconfirm --windowed --name "SDR Tools Relay" --icon build\icon.ico
+          --paths src --add-binary "build\dlls\*.dll;rtlsdr" src\sdr_relay\__main__.py
+      - name: Self-test of the build
+        shell: pwsh
+        run: |
+          $p = Start-Process "dist\SDR Tools Relay\SDR Tools Relay.exe" -ArgumentList "--self-test", "$PWD\build\selftest.json" -Wait -PassThru
+          Get-Content build\selftest.json
+          if ($p.ExitCode -ne 0) { throw "self-test failed" }
+      - name: Version
+        id: v
+        shell: pwsh
+        run: |
+          $v = python -c "import re; print(re.search(r'__version__ = \"(.+?)\"', open('src/sdr_relay/__init__.py').read()).group(1))"
+          "version=$v" >> $env:GITHUB_OUTPUT
+      - name: Installer
+        shell: pwsh
+        run: |
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DVersion=${{ steps.v.outputs.version }}" packaging\windows\relay.iss
+          if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
+      - name: Install it silently and self-test the installed copy
+        shell: pwsh
+        run: |
+          $setup = "dist\SDR-Tools-Relay-Setup-${{ steps.v.outputs.version }}.exe"
+          $p = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installer exit $($p.ExitCode)" }
+          Start-Sleep 3
+          Get-Process "SDR Tools Relay" -ErrorAction SilentlyContinue | Stop-Process -Force
+          $exe = "$env:LOCALAPPDATA\Programs\SDR Tools Relay\SDR Tools Relay.exe"
+          $p = Start-Process $exe -ArgumentList "--self-test", "$PWD\build\installed.json" -Wait -PassThru
+          Get-Content build\installed.json
+          if ($p.ExitCode -ne 0) { throw "installed self-test failed" }
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        shell: pwsh
+        run: |
+          $name = "SDR-Tools-Relay-Setup-${{ steps.v.outputs.version }}.exe"
+          $sha = (Get-FileHash "dist\$name" -Algorithm SHA256).Hash.ToLower()
+          '{"version": "${{ steps.v.outputs.version }}", "installer": "' + $name + '", "sha256": "' + $sha + '"}' | Set-Content -NoNewline -Encoding ascii dist\sdr-tools-relay-windows.json
+          gh release upload "${{ github.event.release.tag_name }}" "dist\$name" dist\sdr-tools-relay-windows.json --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/SDR-Tools-Relay-Setup-*.exe

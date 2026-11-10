@@ -1,0 +1,21 @@
+[project]
+name = "sdr-tools-relay"
+dynamic = ["version"]
+description = "Lends this PC's RTL-SDR to SDR Toolkit over the LAN or the internet (rtl_tcp with a password, LAN discovery, UPnP and a public list)"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.11"
+dependencies = ["pyqt6>=6.5"]
+
+[project.scripts]
+sdr-tools-relay = "sdr_relay.main:main"
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/sdr_relay/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sdr_relay"]

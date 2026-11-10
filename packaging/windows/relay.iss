@@ -47,4 +47,11 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: 
 [Run]
 Filename: "{app}\SDR Tools Relay.exe"; Description: "Start SDR Tools Relay"; Flags: postinstall nowait skipifsilent
 ; After a silent update (from the app), start the new version.
-Filename: "{app}\SDR Tools Relay.exe"; Flags: nowait; Check: WizardSilent
+Filename: "{app}\SDR Tools Relay.exe"; Flags: nowait; Check: LaunchAfterSilentInstall
+
+[Code]
+// /NOLAUNCH=1 skips that (the CI's test install, whose runner would wait for the app to exit).
+function LaunchAfterSilentInstall: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:NOLAUNCH|0}') = '0');
+end;

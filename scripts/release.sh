@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Publishes a GitHub release with the wheel and sdr-tools-relay.json (version, wheel name,
-# SHA-256) for the in-app updater and scripts/install.sh; .github/workflows/windows.yml then
-# builds and attaches the Windows installer and sdr-tools-relay-windows.json.
+# Makes a draft GitHub release with the wheel and sdr-tools-relay.json (version, wheel name,
+# SHA-256) for the in-app updater and scripts/install.sh. Pushing the tag starts
+# .github/workflows/windows.yml, which builds and tests the Windows installer, attaches it and
+# sdr-tools-relay-windows.json, and publishes the release (15-20 minutes). Until then the
+# release is a draft nobody sees; if the Windows build fails it stays one.
 #
 # Usage: scripts/release.sh NOTES.md
 # Bump __version__ in src/sdr_relay/__init__.py and commit first.
@@ -25,5 +27,6 @@ printf '{"version": "%s", "wheel": "%s", "sha256": "%s"}\n' "$version" "$wheel" 
 git tag -a "v$version" -m "SDR Tools Relay $version"
 git push origin HEAD "v$version"
 gh release create "v$version" "$tmp/$wheel" "$tmp/sdr-tools-relay.json" \
-  --title "SDR Tools Relay $version" --notes-file "$notes" --verify-tag
-echo "released SDR Tools Relay $version ($wheel, sha256 $sha)"
+  --title "SDR Tools Relay $version" --notes-file "$notes" --verify-tag --draft
+echo "draft release SDR Tools Relay $version ($wheel, sha256 $sha): the Windows build publishes it"
+echo "  watch: gh run list -R ssjrocks/sdr-tools-relay -L 1"

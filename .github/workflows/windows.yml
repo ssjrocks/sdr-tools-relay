@@ -1,9 +1,12 @@
-# Builds the Windows installer for each release, checks it works, and attaches it with
-# sdr-tools-relay-windows.json (version, installer name, SHA-256) for the in-app updater.
+# Builds the Windows installer, checks it works, and for a release tag (v*) attaches it with
+# sdr-tools-relay-windows.json (version, installer name, SHA-256) to the draft release
+# scripts/release.sh made, then publishes the release. Until then nobody sees it, so no
+# updater finds a release without its files. If anything fails, the release stays a draft.
+# Run by hand (workflow_dispatch) it only builds and tests.
 name: Windows build
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
   workflow_dispatch:
 permissions:
   contents: write
@@ -109,14 +112,30 @@ jobs:
           $p = Start-Process $exe -ArgumentList "--self-test", "$PWD\build\installed.json" -Wait -PassThru
           Get-Content build\installed.json
           if ($p.ExitCode -ne 0) { throw "installed self-test failed" }
-      - name: Attach to the release
-        if: github.event_name == 'release'
+      - name: Attach to the draft release and publish it
+        if: github.ref_type == 'tag'
         shell: pwsh
         run: |
+          $tag = "${{ github.ref_name }}"
+          if ($tag -ne "v${{ steps.v.outputs.version }}") { throw "tag $tag doesn't match version ${{ steps.v.outputs.version }}" }
+          # scripts/release.sh creates the draft right after pushing the tag; give it time.
+          for ($i = 0; $i -lt 30; $i++) {
+            $draft = gh release view $tag --json isDraft -q .isDraft 2>$null
+            if ($LASTEXITCODE -eq 0) { break }
+            Start-Sleep 20
+          }
+          if ($draft -ne "true") { throw "no draft release for $tag (isDraft=$draft): make it with scripts/release.sh" }
           $name = "SDR-Tools-Relay-Setup-${{ steps.v.outputs.version }}.exe"
           $sha = (Get-FileHash "dist\$name" -Algorithm SHA256).Hash.ToLower()
           '{"version": "${{ steps.v.outputs.version }}", "installer": "' + $name + '", "sha256": "' + $sha + '"}' | Set-Content -NoNewline -Encoding ascii dist\sdr-tools-relay-windows.json
-          gh release upload "${{ github.event.release.tag_name }}" "dist\$name" dist\sdr-tools-relay-windows.json --clobber
+          gh release upload $tag "dist\$name" dist\sdr-tools-relay-windows.json --clobber
+          if ($LASTEXITCODE -ne 0) { throw "upload failed" }
+          $assets = gh release view $tag --json assets -q '[.assets[].name] | join(",")'
+          foreach ($want in "sdr-tools-relay.json", "sdr-tools-relay-windows.json", $name) {
+            if (-not ($assets -split "," -contains $want)) { throw "$want missing from the release ($assets)" }
+          }
+          gh release edit $tag --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw "publishing failed" }
         env:
           GH_TOKEN: ${{ github.token }}
       - uses: actions/upload-artifact@v4

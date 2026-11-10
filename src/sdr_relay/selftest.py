@@ -14,7 +14,7 @@ import traceback
 from pathlib import Path
 
 
-def run(out_path) -> int:
+def run(out_path, driver_test=False) -> int:
     results = {}
     try:
         from . import protocol as P
@@ -54,9 +54,18 @@ def run(out_path) -> int:
             c.close()
         finally:
             relay.stop()
+        if driver_test:
+            # Pre-installs WinUSB for a dongle that isn't plugged in (GitHub's runner has none).
+            from . import driver
+            try:
+                results["driver"] = driver.install([driver.Device(0x0BDA, 0x2838, 0, "test", "", "")])
+            except OSError as e:
+                results["driver"] = f"failed: {e}"
     except Exception:
         results["error"] = traceback.format_exc()
     ok = results.get("librtlsdr") is True and all(results.get(k) for k in ("auth", "header", "samples"))
+    if driver_test:
+        ok = ok and str(results.get("driver", "")).startswith("Driver installed")
     results["ok"] = ok
     Path(out_path).write_text(json.dumps(results, indent=1))
     return 0 if ok else 1

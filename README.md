@@ -12,10 +12,12 @@ tuned to and how fast the samples are flowing, with a **Disconnect** button.
 ## Install
 
 **Windows 10/11:** download `SDR-Tools-Relay-Setup-….exe` from the
-[latest release](https://github.com/ssjrocks/sdr-tools-relay/releases/latest) and run it (no
-administrator rights needed). The RTL-SDR also needs the WinUSB driver, once: run
-[Zadig](https://zadig.akeo.ie), choose Options → List All Devices, pick **Bulk-In, Interface
-(Interface 0)** and install **WinUSB**. The first time the relay starts, Windows asks whether to
+[latest release](https://github.com/ssjrocks/sdr-tools-relay/releases/latest) and run it (no administrator rights needed). The RTL-SDR needs Windows' WinUSB driver: when the relay sees a
+dongle without it, it offers to install it (Windows asks for permission), and **Install driver**
+next to the dongle does it again later. It uses libwdi's installer, the same one Zadig uses: like
+Zadig, it signs the driver package with a certificate it makes on the spot and adds that to
+Windows' trusted publishers. Doing it by hand with [Zadig](https://zadig.akeo.ie) works too:
+Options → List All Devices → **Bulk-In, Interface (Interface 0)** → **WinUSB**. The first time the relay starts, Windows asks whether to
 allow it on networks: allow it (private networks at least), or SDR Toolkit can't reach it. The
 installer isn't code-signed, so Windows SmartScreen may warn before running it ("More info" → "Run
 anyway").
@@ -89,11 +91,14 @@ The relay can also play a recording instead of a dongle: `python3 -m sdr_relay -
 SDR Toolkit's `tests/test_relay.py` runs its ISM, ADS-B, AIS and LoRa decoders through this relay
 playing their test recordings.
 
-Not yet tested: a real dongle on a relay, Windows on a real PC (the build is self-tested on
+On GitHub's Windows runner the build also installs the WinUSB driver package (for a dongle that
+isn't plugged in) and checks it's in Windows' driver store. Not yet tested: the driver on a real
+dongle, a real dongle on a relay, Windows on a real PC (the build is self-tested on
 GitHub's Windows runner), UPnP on a real router, and connections over the internet.
 
 ## Licence
 
 GPL-3.0-or-later. The Windows installer includes `rtlsdr.dll` from
 [rtl-sdr-blog](https://github.com/rtlsdrblog/rtl-sdr-blog) (GPL-2.0-or-later), with its runtime
-DLLs.
+DLLs, and `wdi-simple.exe` built from [libwdi](https://github.com/pbatard/libwdi) 1.5.1
+(LGPL-3.0-or-later), which carries Microsoft's WinUSB redistributables.

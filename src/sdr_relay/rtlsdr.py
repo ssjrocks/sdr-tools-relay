@@ -87,9 +87,9 @@ def devices() -> list[dict]:
 
 def explain_open_error(code: int) -> str:
     if sys.platform == "win32":
-        return (f"Couldn't open the RTL-SDR (error {code}). On Windows it needs the WinUSB driver: run Zadig "
-                "(zadig.akeo.ie), choose Options → List All Devices, pick 'Bulk-In, Interface (Interface 0)' "
-                "and install WinUSB. Also close any other program using it (SDR#, SDR++).")
+        return (f"Couldn't open the RTL-SDR (error {code}). Close any other program using it (SDR#, SDR++). "
+                "If it's newly plugged in, press Refresh in the relay's window: it offers to install the "
+                "WinUSB driver it needs.")
     return (f"Couldn't open the RTL-SDR (error {code}). Close any other program using it (SDR++, GQRX, a "
             "readsb or rtl_tcp service). If the kernel's DVB driver holds it, blacklist dvb_usb_rtl28xxu.")
 

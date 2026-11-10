@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME, __version__, appreports, autostart, updater
+from . import APP_NAME, __version__, appreports, autostart, driver, updater
 from . import protocol as P
 from .discovery import Responder
 from .internet import Internet
@@ -121,8 +121,15 @@ class Window(QMainWindow):
         self.device_note = QLabel()
         self.device_note.setWordWrap(True)
         self.device_note.setOpenExternalLinks(True)
+        self.driver_btn = QPushButton("Install driver")
+        self.driver_btn.setToolTip("Put Windows' WinUSB driver on the dongle, so the relay can use it")
+        self.driver_btn.clicked.connect(lambda: self.install_driver(ask=False))
+        self.driver_btn.setVisible(False)
+        self._need_driver: list = []
+        self._offered_driver = False
         drow = QHBoxLayout()
         drow.addWidget(self.device, 1)
+        drow.addWidget(self.driver_btn)
         drow.addWidget(refresh)
         dbox = QGroupBox("Dongle")
         dl = QVBoxLayout(dbox)
@@ -302,16 +309,60 @@ class Window(QMainWindow):
                 for d in found:
                     label = d["name"] + (f" (serial {d['serial']})" if d["serial"] else "")
                     self.device.addItem(label, d["index"])
-                self.device_note.setText("" if found else "No RTL-SDR found. Plug it in and press Refresh." + (
-                    " On Windows it also needs the WinUSB driver: see "
-                    "<a href='https://zadig.akeo.ie'>Zadig</a> (Options → List All Devices → "
-                    "Bulk-In, Interface (Interface 0) → WinUSB)." if sys.platform == "win32" else ""))
+                self.device_note.setText("" if found else "No RTL-SDR found. Plug it in and press Refresh.")
             except RtlError as e:
                 self.device_note.setText(html.escape(str(e)))
             i = self.device.findData(self.relay.config.device)
             if i >= 0:
                 self.device.setCurrentIndex(i)
+            if sys.platform == "win32":
+                self._run(driver.missing, self._driver_checked, lambda msg: None)
         self.device.blockSignals(False)
+
+    # ---- the Windows driver -------------------------------------------
+
+    def _driver_checked(self, need):
+        self._need_driver = need
+        self.driver_btn.setVisible(bool(need))
+        if not need:
+            return
+        names = ", ".join(d.describe() for d in need)
+        self.device_note.setText(f"{html.escape(names)} needs Windows' WinUSB driver before the relay can use it. "
+                                 "Press Install driver (Windows asks for permission).")
+        if not self._offered_driver:
+            self._offered_driver = True
+            QTimer.singleShot(300, lambda: self.install_driver(ask=True))
+
+    def install_driver(self, ask=True):
+        need = self._need_driver
+        if not need:
+            return
+        if ask:
+            self.show_window()
+            names = "\n".join(d.describe() for d in need)
+            if QMessageBox.question(self, APP_NAME, f"This dongle needs Windows' WinUSB driver:\n\n{names}\n\n"
+                                    "Install it now? Windows will ask for permission. Programs that use the "
+                                    "dongle's old driver (TV software) won't see it any more.") \
+                    != QMessageBox.StandardButton.Yes:
+                return
+        self.driver_btn.setEnabled(False)
+        self.driver_btn.setText("Installing…")
+
+        def done(message):
+            self.relay.note(message)
+            self.driver_btn.setEnabled(True)
+            self.driver_btn.setText("Install driver")
+            QTimer.singleShot(2000, self.fill_devices)       # give Windows a moment to start the driver
+
+        def failed(msg):
+            self.relay.note(f"Driver: {msg}")
+            self.driver_btn.setEnabled(True)
+            self.driver_btn.setText("Install driver")
+            QMessageBox.warning(self, APP_NAME, f"The driver wasn't installed: {msg}\n\nZadig (zadig.akeo.ie) "
+                                "does the same by hand: Options → List All Devices → Bulk-In, Interface "
+                                "(Interface 0) → WinUSB.")
+
+        self._run(lambda: driver.install(need), done, failed)
 
     # ---- status -------------------------------------------------------
 

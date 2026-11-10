@@ -29,18 +29,60 @@ jobs:
           Copy-Item build\rtlblog\x64\rtlsdr.dll, build\rtlblog\x64\pthreadVC2.dll, build\rtlblog\x64\msvcr100.dll build\dlls\
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: libwdi sources and support files (for wdi-simple, the WinUSB driver installer)
+        shell: pwsh
+        run: |
+          git clone --quiet https://github.com/pbatard/libwdi build\libwdi
+          git -C build\libwdi checkout --quiet 9b23b82a2dd1cbffc16d46c212f92c6bf8c0c602   # v1.5.1
+          $w = "build\libwdi"
+          curl.exe -sSL -o "$w\wdk-redist.msi" "https://go.microsoft.com/fwlink/p/?LinkID=253170"
+          curl.exe -sSL -o "$w\libusb0.zip" https://github.com/mcuee/libusb-win32/releases/download/release_1.4.0.0/libusb-win32-bin-1.4.0.0.zip
+          curl.exe -sSL -o "$w\libusbk.7z" https://github.com/mcuee/libusbk/releases/download/V3.1.0.0/libusbK-3.1.0.0-bin.7z
+          $want = @{ "wdk-redist.msi" = "29314207814ce9d5d73695f7e9239539cf37c79e750b9d5ea5a5ef5487a583d6";
+                     "libusb0.zip" = "9950b7a226e3ea387365c046d13b68bd0b0b18c015c034363601ff601c5b5585";
+                     "libusbk.7z" = "38605d8d5a86f408a4b7bec60f6d4a096050eee72f89a63a8d5be125252d3fe7" }
+          foreach ($f in $want.Keys) {
+            $h = (Get-FileHash "$w\$f" -Algorithm SHA256).Hash.ToLower()
+            if ($h -ne $want[$f]) { throw "$f checksum $h" }
+          }
+          $root = (Resolve-Path $w).Path
+          Start-Process msiexec -ArgumentList "/a", "$root\wdk-redist.msi", "/qn", "TARGETDIR=$root\wdk" -Wait
+          7z x "$w\libusb0.zip" "-o$w" | Out-Null
+          7z x "$w\libusbk.7z" "-o$w" | Out-Null
+          Remove-Item "$w\libusb0.zip", "$w\libusbk.7z", "$w\wdk-redist.msi"     # before the moves below match them
+          Move-Item "$w\libusb-win32*" "$w\libusb0"
+          Move-Item "$w\libusbK*" "$w\libusbk"
+          if (-not (Test-Path "$w\libusbk\bin")) { throw "libusbK layout changed" }
+          if (-not (Test-Path "$w\wdk\Windows Kits\8.0")) { throw "WDK redistributables missing" }
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build wdi-simple
+        shell: cmd
+        working-directory: build\libwdi
+        env:   # as in libwdi's own .github/workflows/vs2022.yml
+          BUILD_MACROS: '"WDK_DIR=\"../wdk/Windows Kits/8.0\";LIBUSB0_DIR=\"../libusb0\";LIBUSBK_DIR=\"../libusbk/bin\""'
+        run: |
+          for %%P in (Win32 x64) do (
+            msbuild libwdi.sln /m /v:minimal /p:Configuration=Release,Platform=%%P,BuildMacros=${{ env.BUILD_MACROS }} || exit /b 1
+          )
+          mkdir ..\wdi
+          copy x64\Release\examples\wdi-simple.exe ..\wdi\ || exit /b 1
       - name: Icon
         run: python -c "from PIL import Image; Image.open('packaging/icon.png').save('build/icon.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
       - name: PyInstaller
         run: >
           pyinstaller --noconfirm --windowed --name "SDR Tools Relay" --icon build\icon.ico
-          --paths src --add-binary "build\dlls\*.dll;rtlsdr" src\sdr_relay\__main__.py
-      - name: Self-test of the build
+          --paths src --add-binary "build\dlls\*.dll;rtlsdr" --add-binary "build\wdi\wdi-simple.exe;wdi"
+          src\sdr_relay\__main__.py
+      - name: Self-test of the build, including installing the WinUSB driver package
         shell: pwsh
         run: |
-          $p = Start-Process "dist\SDR Tools Relay\SDR Tools Relay.exe" -ArgumentList "--self-test", "$PWD\build\selftest.json" -Wait -PassThru
+          $p = Start-Process "dist\SDR Tools Relay\SDR Tools Relay.exe" -ArgumentList "--self-test", "$PWD\build\selftest.json", "--self-test-driver" -Wait -PassThru
           Get-Content build\selftest.json
           if ($p.ExitCode -ne 0) { throw "self-test failed" }
+          $drivers = pnputil /enum-drivers | Out-String
+          $i = $drivers.IndexOf("rtl-sdr-winusb.inf")
+          if ($i -lt 0) { throw "the WinUSB driver package isn't in the driver store" }
+          $drivers.Substring([Math]::Max(0, $i - 80), 600)
       - name: Version
         id: v
         shell: pwsh

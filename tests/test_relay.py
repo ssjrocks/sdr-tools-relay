@@ -246,3 +246,25 @@ def test_commands_sent_with_the_handshake_are_kept(relay):
     calls = relay.dongles[0].calls
     assert ("set_center_freq", 1090000000) in calls and ("set_sample_rate", 2400000) in calls
     s.close()
+
+
+def test_finding_dongles_without_winusb():
+    from sdr_relay import driver
+    rows = [  # Win32_PnPEntity, as Windows lists an RTL-SDR (composite: parent + two interfaces)
+        {"PNPDeviceID": "USB\\VID_0BDA&PID_2838\\00000001", "Name": "USB Composite Device", "Service": "usbccgp"},
+        {"PNPDeviceID": "USB\\VID_0BDA&PID_2838&MI_00\\6&1A2B3C&0&0000", "Name": "Bulk-In, Interface", "Service": None},
+        {"PNPDeviceID": "USB\\VID_0BDA&PID_2838&MI_01\\6&1A2B3C&0&0001", "Name": "Bulk-In, Interface", "Service": None},
+        {"PNPDeviceID": "USB\\VID_046D&PID_C52B\\5&2", "Name": "Logitech", "Service": "usbccgp"}]
+    need = driver.parse(rows)
+    assert len(need) == 1 and (need[0].vid, need[0].pid, need[0].iid) == (0x0BDA, 0x2838, 0)
+    assert "no driver" in need[0].describe()
+    cmd = driver.command(need[0], "C:\\tmp")
+    assert cmd[cmd.index("--vid") + 1] == "0x0BDA" and cmd[cmd.index("--iid") + 1] == "0" and "--silent" in cmd
+    # A TV driver from Windows Update also needs replacing; WinUSB doesn't.
+    tv = driver.parse({"PNPDeviceID": "USB\\VID_0BDA&PID_2832&MI_00\\x", "Name": "RTL2832U", "Service": "RTL2832UBDA"})
+    assert tv and tv[0].service == "RTL2832UBDA"
+    assert driver.parse([{"PNPDeviceID": "USB\\VID_0BDA&PID_2838&MI_00\\x", "Service": "WinUSB"}]) == []
+    # A non-composite one (no MI_ part) is installed without --iid.
+    plain = driver.parse([{"PNPDeviceID": "USB\\VID_0BDA&PID_2838\\0001", "Name": "RTL", "Service": ""}])
+    assert plain[0].iid is None and "--iid" not in driver.command(plain[0], "x")
+    assert driver.missing() == []                 # off Windows

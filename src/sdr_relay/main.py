@@ -21,11 +21,12 @@ def main():
     ap.add_argument("--minimized", action="store_true", help="start in the tray")
     ap.add_argument("--demo", metavar="FILE.cu8", help="play a recording instead of a dongle")
     ap.add_argument("--self-test", metavar="RESULTS.json", help="check this build works, then exit")
+    ap.add_argument("--self-test-driver", action="store_true", help="also install the WinUSB driver package")
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args()
     if args.self_test:
         from sdr_relay.selftest import run as self_test
-        sys.exit(self_test(args.self_test))
+        sys.exit(self_test(args.self_test, driver_test=args.self_test_driver))
     log_file = state_dir() / "relay.log"
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
                         handlers=[logging.handlers.RotatingFileHandler(log_file, maxBytes=512 * 1024,

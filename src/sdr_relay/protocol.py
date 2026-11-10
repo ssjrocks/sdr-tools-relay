@@ -15,6 +15,8 @@ TCP, default port 47320:
    With "update": true (when the hello's "features" has "update") the relay looks for a newer
    release and, if there is one, answers {"ok": true, "updating": "<version>"}, closes, and
    installs it (then restarts). Only with the password: a relay without one refuses.
+   With "diagnose": true (also password only) the relay tries each way of reading its dongle
+   for 2 s and answers {"ok": true, "report": {...}} (see diagnose.py); it takes ~20 s.
 4. From then on it's rtl_tcp: the relay sends "RTL0", the tuner type and the number of
    gain steps (big-endian u32 each), then unsigned 8-bit IQ; the client sends 5-byte
    commands (a command byte, a big-endian u32).

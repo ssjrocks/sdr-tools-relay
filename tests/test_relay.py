@@ -343,3 +343,72 @@ def test_update_on_request_needs_the_password(relay):
     relay.config.password = "secret"
     hello, answer = ask_update(relay, "secret")
     assert "update" not in hello["features"] and not answer["ok"]
+
+
+class FakeLib:
+    """librtlsdr as on the Windows PC in the problem report: async reads deliver nothing."""
+
+    def __init__(self, async_works=False):
+        self.async_works = async_works
+        self.cancelled = False
+        self.sync_reads = 0
+
+    def rtlsdr_reset_buffer(self, dev):
+        return 0
+
+    def rtlsdr_read_async(self, dev, cb, ctx, num, length):
+        import ctypes
+        buf = (ctypes.c_ubyte * length)()
+        while not self.cancelled:
+            if self.async_works:
+                cb(buf, length, None)
+            time.sleep(0.01)
+        return 0
+
+    def rtlsdr_cancel_async(self, dev):
+        self.cancelled = True
+        return 0
+
+    def rtlsdr_read_sync(self, dev, buf, length, n):
+        import ctypes
+        self.sync_reads += 1
+        ctypes.memset(buf, 0x55, length)
+        n._obj.value = length
+        time.sleep(0.005)
+        return 0
+
+    def rtlsdr_close(self, dev):
+        return 0
+
+
+def fake_dongle(lib):
+    from sdr_relay.rtlsdr import Dongle
+    d = Dongle.__new__(Dongle)
+    d.lib, d.dev, d.index, d._thread, d._cb = lib, None, 0, None, None
+    return d
+
+
+def test_dongle_falls_back_to_sync_reads_when_async_gives_nothing():
+    lib = FakeLib(async_works=False)
+    d = fake_dongle(lib)
+    got = []
+    d.start(got.append, buf_len=4096)
+    time.sleep(4.0)
+    assert d.method == "sync" and lib.cancelled and lib.sync_reads > 10 and got and got[0] == b"\x55" * 4096
+    d.close()
+    ok = FakeLib(async_works=True)
+    d2 = fake_dongle(ok)
+    got2 = []
+    d2.start(got2.append, buf_len=4096)
+    time.sleep(3.5)
+    assert d2.method == "async" and got2 and ok.sync_reads == 0
+    d2.close()
+
+
+def test_dongle_check_on_request(relay):
+    s = socket.create_connection(("127.0.0.1", relay.config.port), timeout=5)
+    hello = read_line(s)
+    assert "diagnose" in hello["features"]
+    s.sendall(P.line({"client": "test", "auth": P.auth("secret", hello["nonce"]), "diagnose": True}))
+    assert read_line(s) == {"ok": True, "report": {"skipped": "playing a recording"}}
+    assert relay.session is None

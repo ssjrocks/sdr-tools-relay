@@ -16,6 +16,7 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+READ_CB = ctypes.CFUNCTYPE(None, ctypes.POINTER(ctypes.c_ubyte), ctypes.c_uint32, ctypes.c_void_p)
 TUNERS = {0: "unknown", 1: "E4000", 2: "FC0012", 3: "FC0013", 4: "FC2580", 5: "R820T", 6: "R828D"}
 _lib = None
 
@@ -65,11 +66,13 @@ def _load():
         fn.restype = ctypes.c_int
     if hasattr(lib, "rtlsdr_set_bias_tee"):            # not in every librtlsdr
         lib.rtlsdr_set_bias_tee.argtypes = [p, ctypes.c_int]
+    lib.rtlsdr_read_async.argtypes = [p, READ_CB, p, ctypes.c_uint32, ctypes.c_uint32]
+    lib.rtlsdr_read_async.restype = ctypes.c_int
+    lib.rtlsdr_read_sync.argtypes = [p, p, ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+    lib.rtlsdr_read_sync.restype = ctypes.c_int
     _lib = lib
     return lib
 
-
-READ_CB = ctypes.CFUNCTYPE(None, ctypes.POINTER(ctypes.c_ubyte), ctypes.c_uint32, ctypes.c_void_p)
 
 
 def devices() -> list[dict]:
@@ -124,26 +127,93 @@ class Dongle:
             return -1
         return fn(self.dev, *args)
 
-    def start(self, on_data, buf_len=16384 * 4):
-        """Stream into *on_data(bytes)* from a thread until stop()."""
+    def start(self, on_data, buf_len=16384 * 4, method="auto"):
+        """Stream into *on_data(bytes)* from a thread until stop().
+
+        "async" is librtlsdr's rtlsdr_read_async (what rtl_tcp uses), "sync" a loop of
+        rtlsdr_read_sync (what rtl_sdr -S and pyrtlsdr use). "auto" starts async and, if no
+        samples arrive within 3 s, switches to sync: on a Windows PC async gave none at all.
+        """
         self.call("reset_buffer")
+        self._halt = threading.Event()
+        self.method = "async" if method in ("auto", "async") else "sync"
+        self.received = 0
+        self.last_result = None
+        self.callback_error = ""
+
+        def deliver(data):
+            self.received += len(data)
+            on_data(data)
 
         def cb(buf, n, _ctx):
-            on_data(ctypes.string_at(buf, n))
+            try:
+                deliver(ctypes.string_at(buf, n))
+            except Exception as e:  # a windowed app has no stderr: keep it for the log
+                if not self.callback_error:
+                    self.callback_error = repr(e)
+                    log.exception("dongle callback")
 
-        self._cb = READ_CB(cb)
-        self._thread = threading.Thread(target=self.lib.rtlsdr_read_async,
-                                        args=(self.dev, self._cb, None, 0, buf_len), daemon=True)
+        def run_async():
+            self._cb = READ_CB(cb)
+            r = self.lib.rtlsdr_read_async(self.dev, self._cb, None, 0, buf_len)
+            self.last_result = r
+            log.info("rtlsdr_read_async returned %d after %d bytes", r, self.received)
+
+        def run_sync():
+            buf = ctypes.create_string_buffer(buf_len)
+            n = ctypes.c_int(0)
+            errors = 0
+            while not self._halt.is_set():
+                r = self.lib.rtlsdr_read_sync(self.dev, buf, buf_len, ctypes.byref(n))
+                self.last_result = r
+                if r < 0 or n.value <= 0:
+                    errors += 1
+                    if errors in (1, 10, 100):
+                        log.warning("rtlsdr_read_sync: %d, %d bytes (%d failures)", r, n.value, errors)
+                    time.sleep(0.05)
+                    continue
+                deliver(buf.raw[: n.value])
+
+        def watchdog():
+            if self._halt.wait(3.0) or self.received:
+                return
+            log.warning("no samples from rtlsdr_read_async in 3 s (callback error: %s): switching to "
+                        "rtlsdr_read_sync", self.callback_error or "none")
+            self.lib.rtlsdr_cancel_async(self.dev)
+            t = self._thread
+            if t is not None:
+                t.join(3)
+            if self._halt.is_set():
+                return
+            self.call("reset_buffer")
+            self.method = "sync"
+            self._thread = threading.Thread(target=run_sync, daemon=True, name="dongle-sync")
+            self._thread.start()
+
+        target = run_async if self.method == "async" else run_sync
+        self._thread = threading.Thread(target=target, daemon=True, name=f"dongle-{self.method}")
         self._thread.start()
+        if method == "auto":
+            threading.Thread(target=watchdog, daemon=True, name="dongle-watchdog").start()
 
     def stop(self):
+        halt = getattr(self, "_halt", None)
+        if halt is not None:
+            halt.set()
         if self._thread is not None:
-            self.lib.rtlsdr_cancel_async(self.dev)
+            if getattr(self, "method", "async") == "async":
+                self.lib.rtlsdr_cancel_async(self.dev)
             self._thread.join(3)
-            self._thread = None
+            if not self._thread.is_alive():
+                self._thread = None
 
     def close(self):
         self.stop()
+        if self._thread is not None and self._thread.is_alive():
+            # A sync read waiting for samples that never come can't be interrupted, and closing
+            # the device under it may crash the relay: leave it open (restarting the relay frees it).
+            log.warning("the dongle's read thread is stuck; not closing it (restart the relay)")
+            raise RtlError("the dongle stopped answering: restart the relay, or replug the dongle")
         self.lib.rtlsdr_close(self.dev)
 
 

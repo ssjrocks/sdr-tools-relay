@@ -54,6 +54,14 @@ def run(out_path, driver_test=False) -> int:
             c.close()
         finally:
             relay.stop()
+        # The dongle check runs (there's no dongle on a build machine: it reports that).
+        from .diagnose import rtl_sdr_exe, run as check_dongle
+        if results.get("dongles"):
+            results["dongle_check"] = "skipped: a dongle is plugged in (it may be in use)"
+        else:
+            report = check_dongle()
+            results["dongle_check"] = {k: v for k, v in report.items() if k != "devices"}
+        results["rtl_sdr_bundled"] = rtl_sdr_exe() is not None
         if driver_test:
             # Pre-installs WinUSB for a dongle that isn't plugged in (GitHub's runner has none).
             from . import driver
@@ -64,6 +72,8 @@ def run(out_path, driver_test=False) -> int:
     except Exception:
         results["error"] = traceback.format_exc()
     ok = results.get("librtlsdr") is True and all(results.get(k) for k in ("auth", "header", "samples"))
+    if getattr(sys, "frozen", False) and sys.platform == "win32":
+        ok = ok and results.get("rtl_sdr_bundled") is True
     if driver_test:
         ok = ok and str(results.get("driver", "")).startswith("Driver installed")
     results["ok"] = ok

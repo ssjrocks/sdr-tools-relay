@@ -74,7 +74,7 @@ class Relay:
         h = {"relay": "sdr-tools-relay", "protocol": P.PROTOCOL, "name": self.config.name, "version": self.version,
              "devices": self.describe_devices(), "password": bool(self.config.password),
              "busy": self.session is not None,
-             "features": ["check"] + (["update"] if self.on_update is not None else [])}
+             "features": ["check", "diagnose"] + (["update"] if self.on_update is not None else [])}
         if nonce:
             h["nonce"] = nonce
         return h
@@ -145,6 +145,10 @@ class Relay:
             if reply.get("update"):
                 conn.sendall(P.line(self._update_request(addr)))
                 return
+            if reply.get("diagnose"):
+                conn.settimeout(120)
+                conn.sendall(P.line(self._diagnose_request(addr)))
+                return
             if reply.get("check"):
                 # Only checking the password (SDR Toolkit's Connect): don't open the dongle.
                 conn.sendall(P.line({"ok": True, "ppm": self.config.ppm, "checked": True}))
@@ -181,6 +185,26 @@ class Relay:
             log.exception("update request")
             ok, text = False, str(e)
         return {"ok": True, "updating": text} if ok else {"ok": False, "error": text}
+
+    def _diagnose_request(self, addr) -> dict:
+        if not self.config.password:
+            return {"ok": False, "error": "the dongle check needs a password set on the relay"}
+        with self._lock:
+            if self.session is not None:
+                return {"ok": False, "error": "busy"}
+            self.session = Session(addr[0])         # nobody else opens the dongle meanwhile
+        try:
+            self.note(f"{addr[0]} asked for a dongle check")
+            if self.config.file:
+                return {"ok": True, "report": {"skipped": "playing a recording"}}
+            from .diagnose import run
+            report = run(self.config.device)
+            self.note("Dongle check: " + ", ".join(
+                f"{k} {v.get('bytes', 0) // 1000} kB" for k, v in report.items() if isinstance(v, dict)))
+            return {"ok": True, "report": report}
+        finally:
+            with self._lock:
+                self.session = None
 
     @staticmethod
     def _read_line(conn) -> tuple[dict | None, bytes]:
@@ -294,7 +318,11 @@ class Relay:
             self.note(f"{addr[0]} disconnected after {time.time() - session.started:.0f} s, {mb:.1f} MB"
                       + (f", {session.dropped} buffers dropped (network too slow)" if session.dropped else ""))
         finally:
-            dongle.close()
+            try:
+                dongle.close()
+            except RtlError as e:
+                self.last_error = str(e)
+                self.note(str(e))
 
     def _command(self, dongle, session, gains, cmd, value):
         if cmd == P.SET_FREQ:

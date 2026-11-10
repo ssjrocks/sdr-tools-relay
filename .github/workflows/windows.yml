@@ -29,7 +29,7 @@ jobs:
           if ($sha -ne "7ef33f1304647f65e5e0fde43637a73d54f076e91e651a3cecc4f55a17fd9815") { throw "Release.zip checksum $sha" }
           Expand-Archive build\Release.zip build\rtlblog
           New-Item -ItemType Directory build\dlls | Out-Null
-          Copy-Item build\rtlblog\x64\rtlsdr.dll, build\rtlblog\x64\pthreadVC2.dll, build\rtlblog\x64\msvcr100.dll build\dlls\
+          Copy-Item build\rtlblog\x64\rtlsdr.dll, build\rtlblog\x64\pthreadVC2.dll, build\rtlblog\x64\msvcr100.dll, build\rtlblog\x64\rtl_sdr.exe build\dlls\
         env:
           GH_TOKEN: ${{ github.token }}
       - name: libwdi sources and support files (for wdi-simple, the WinUSB driver installer)
@@ -74,7 +74,7 @@ jobs:
       - name: PyInstaller
         run: >
           pyinstaller --noconfirm --windowed --name "SDR Tools Relay" --icon build\icon.ico
-          --paths src --add-binary "build\dlls\*.dll;rtlsdr" --add-binary "build\wdi\wdi-simple.exe;wdi"
+          --paths src --add-binary "build\dlls\*.dll;rtlsdr" --add-binary "build\dlls\rtl_sdr.exe;rtlsdr" --add-binary "build\wdi\wdi-simple.exe;wdi"
           src\sdr_relay\__main__.py
       - name: Self-test of the build, including installing the WinUSB driver package
         shell: pwsh

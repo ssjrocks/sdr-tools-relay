@@ -44,7 +44,9 @@ jobs:
         id: v
         shell: pwsh
         run: |
-          $v = python -c "import re; print(re.search(r'__version__ = \"(.+?)\"', open('src/sdr_relay/__init__.py').read()).group(1))"
+          $env:PYTHONPATH = "src"
+          $v = python -c "import sdr_relay; print(sdr_relay.__version__)"
+          if (-not $v) { throw "no version" }
           "version=$v" >> $env:GITHUB_OUTPUT
       - name: Installer
         shell: pwsh

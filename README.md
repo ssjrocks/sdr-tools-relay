@@ -6,6 +6,12 @@ over the internet. SDR Toolkit's **Connect relay…** finds it, takes control of
 sample rate, gain) and receives its samples, and every RTL-SDR mode (ADS-B, AIS, ISM, LoRa,
 DMR/P25, GPS) then runs on it as if it were plugged in locally.
 
+It lends a **HackRF One** the same way. SDR Toolkit drives it like an RTL-SDR (any mode works through
+it), plus its own controls: frequencies from 1 MHz to 6 GHz, 2-20 MS/s, LNA and VGA gain, RF amp, antenna
+power, baseband filter and clock out. It can also **sweep** (hackrf_sweep's fast scan of up to 6 GHz,
+for SDR Toolkit's survey) and, only if you allow it here and set a password, **transmit** what SDR
+Toolkit sends it. Transmitting needs a licence for the frequency.
+
 The relay is a small window with a tray icon. It shows the dongle, who's connected, what they've
 tuned to and how fast the samples are flowing, with a **Disconnect** button.
 

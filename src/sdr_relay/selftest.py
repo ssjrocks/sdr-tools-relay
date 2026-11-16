@@ -25,6 +25,12 @@ def run(out_path, driver_test=False) -> int:
             results["librtlsdr"] = True
         except Exception as e:
             results["librtlsdr"] = f"failed: {e}"
+        try:
+            from .hackrf import devices as hackrfs
+            results["hackrfs"] = hackrfs()
+            results["libhackrf"] = True
+        except Exception as e:
+            results["libhackrf"] = f"failed: {e}"
         rec = Path(tempfile.mkdtemp()) / "test.cu8"
         rec.write_bytes(bytes(range(256)) * 1024)
         s = socket.socket()
@@ -72,6 +78,8 @@ def run(out_path, driver_test=False) -> int:
     except Exception:
         results["error"] = traceback.format_exc()
     ok = results.get("librtlsdr") is True and all(results.get(k) for k in ("auth", "header", "samples"))
+    if getattr(sys, "frozen", False):
+        ok = ok and results.get("libhackrf") is True          # the build bundles it
     if getattr(sys, "frozen", False) and sys.platform == "win32":
         ok = ok and results.get("rtl_sdr_bundled") is True
     if driver_test:

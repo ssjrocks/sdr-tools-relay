@@ -21,6 +21,28 @@ TCP, default port 47320:
    gain steps (big-endian u32 each), then unsigned 8-bit IQ; the client sends 5-byte
    commands (a command byte, a big-endian u32).
 
+Devices. The hello's "devices" lists each one: {"id": "rtl:0" | "hackrf:<serial>", "type": "rtl" |
+"hackrf", "name", "serial"}. The client's reply may name one ("device": id); otherwise the relay's
+own choice is used. The "ok" answer then carries "device": what it is ({"type": "hackrf", "board",
+"firmware", "usb_api", "serial", "min_rate", "max_rate", "min_freq", "max_freq", ...}).
+
+A HackRF (features "hackrf"):
+- streams like an RTL-SDR (step 4): rtl_tcp's tuner type is 100; its 52 gain steps are every LNA +
+  VGA total, 0-102 dB in 2 dB; the bias tee is antenna power; sample rates are 2-20 MS/s (a client
+  that wants less asks for a whole multiple and filters it down itself). Its own commands:
+  SET_FREQ_HI (0x40, the upper 32 bits of the next SET_FREQ: frequencies to 6 GHz), SET_LNA_GAIN
+  (0x41, dB 0-40), SET_VGA_GAIN (0x42, dB 0-62), SET_AMP (0x43, RF amp 0/1), SET_ANTENNA_POWER
+  (0x44, 0/1), SET_BASEBAND_FILTER (0x45, Hz, 0 = automatic), SET_CLKOUT (0x46, 0/1),
+  SET_TXVGA_GAIN (0x47, dB 0-47, for transmitting).
+- sweeps (features "sweep"): {"stream": "sweep", "ranges": [[lo_mhz, hi_mhz], ...] (up to 10),
+  "lna", "vga", "amp", "antenna"} gets {"ok": true, "stream": "sweep", "ranges": [lo, hi, ...]}
+  (rounded up to 20 MHz steps, as hackrf_sweep does), then hackrf_sweep's raw transfers: 16384-byte
+  blocks, each 0x7F 0x7F, the block's frequency in Hz (u64, little-endian) and signed 8-bit IQ.
+  The client does the FFTs.
+- transmits (features "tx", only when the relay's owner allows it, and only with a password):
+  {"stream": "tx", "freq", "rate", "txvga", "amp", "antenna", "filter"} gets {"ok": true, "stream":
+  "tx"}; then everything the client sends is signed 8-bit IQ to transmit, until it disconnects.
+
 LAN discovery: a client sends DISCOVER to UDP port 47321 (broadcast); each relay answers
 with its hello (without the nonce) plus "port".
 
@@ -41,10 +63,16 @@ DISCOVER = b"SDR-TOOLS-RELAY? 1"
 # rtl_tcp commands
 SET_FREQ, SET_RATE, SET_GAIN_MODE, SET_GAIN, SET_PPM, SET_IF_GAIN, SET_TEST_MODE, SET_AGC, \
     SET_DIRECT_SAMPLING, SET_OFFSET_TUNING, SET_RTL_XTAL, SET_TUNER_XTAL, SET_GAIN_INDEX, SET_BIAS_TEE = range(1, 15)
+# HackRF commands (see above)
+SET_FREQ_HI, SET_LNA_GAIN, SET_VGA_GAIN, SET_AMP, SET_ANTENNA_POWER, SET_BASEBAND_FILTER, SET_CLKOUT, \
+    SET_TXVGA_GAIN = range(0x40, 0x48)
 NAMES = {SET_FREQ: "frequency", SET_RATE: "sample rate", SET_GAIN_MODE: "gain mode", SET_GAIN: "gain",
          SET_PPM: "frequency correction", SET_IF_GAIN: "IF gain", SET_TEST_MODE: "test mode", SET_AGC: "AGC",
          SET_DIRECT_SAMPLING: "direct sampling", SET_OFFSET_TUNING: "offset tuning", SET_RTL_XTAL: "RTL crystal",
-         SET_TUNER_XTAL: "tuner crystal", SET_GAIN_INDEX: "gain step", SET_BIAS_TEE: "bias tee"}
+         SET_TUNER_XTAL: "tuner crystal", SET_GAIN_INDEX: "gain step", SET_BIAS_TEE: "bias tee",
+         SET_FREQ_HI: "frequency (upper bits)", SET_LNA_GAIN: "LNA gain", SET_VGA_GAIN: "VGA gain",
+         SET_AMP: "RF amp", SET_ANTENNA_POWER: "antenna power", SET_BASEBAND_FILTER: "baseband filter",
+         SET_CLKOUT: "clock out", SET_TXVGA_GAIN: "TX gain"}
 
 
 def auth(password: str, nonce: str) -> str:

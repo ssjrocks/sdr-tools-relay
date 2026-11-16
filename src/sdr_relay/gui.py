@@ -35,6 +35,7 @@ from . import protocol as P
 from .discovery import Responder
 from .internet import Internet
 from .rtlsdr import RtlError, devices
+from .server import device_id
 from .server import Config, Relay
 
 log = logging.getLogger(__name__)
@@ -135,7 +136,7 @@ class Window(QMainWindow):
         drow.addWidget(self.device, 1)
         drow.addWidget(self.driver_btn)
         drow.addWidget(refresh)
-        dbox = QGroupBox("Dongle")
+        dbox = QGroupBox("Radio (RTL-SDR or HackRF)")
         dl = QVBoxLayout(dbox)
         dl.addLayout(drow)
         dl.addWidget(self.device_note)
@@ -164,6 +165,11 @@ class Window(QMainWindow):
         self.open_port.setChecked(self._bool("open_port", False))
         self.listed = QCheckBox("List it on ssjrocks.com (anyone with SDR Toolkit can see and use it)")
         self.listed.setChecked(self._bool("listed", False))
+        self.allow_tx = QCheckBox("Let users transmit with a HackRF (only with the password)")
+        self.allow_tx.setToolTip("SDR Toolkit can then send signals out of the HackRF through this relay. "
+                                 "Transmitting needs a licence for the frequency (an amateur licence, say): only "
+                                 "turn it on for people you trust with that.")
+        self.allow_tx.setChecked(self._bool("allow_tx", False))
         self.autostart = QCheckBox("Start when I log in (in the tray)")
         self.autostart.setChecked(autostart.enabled())
         form = QFormLayout()
@@ -175,7 +181,7 @@ class Window(QMainWindow):
         sbox = QGroupBox("Settings")
         sl = QVBoxLayout(sbox)
         sl.addLayout(form)
-        for w in (self.open_port, self.listed, self.autostart):
+        for w in (self.open_port, self.listed, self.allow_tx, self.autostart):
             sl.addWidget(w)
         self.port_status = QLabel()
         self.port_status.setWordWrap(True)
@@ -187,7 +193,7 @@ class Window(QMainWindow):
             w.editingFinished.connect(self.apply)
         for w in (self.port, self.ppm):
             w.editingFinished.connect(self.apply)
-        for w in (self.client_ppm, self.open_port, self.listed):
+        for w in (self.client_ppm, self.open_port, self.listed, self.allow_tx):
             w.toggled.connect(self.apply)
         self.autostart.toggled.connect(self._set_autostart)
         self.device.currentIndexChanged.connect(self.apply)
@@ -266,9 +272,9 @@ class Window(QMainWindow):
     def _config(self, demo_file) -> Config:
         s = self.settings
         return Config(name=str(s.value("name", "") or _default_name()), port=int(s.value("port", P.PORT)),
-                      password=str(s.value("password", "")), device=int(s.value("device", 0)),
+                      password=str(s.value("password", "")), device=device_id(s.value("device", "rtl:0")),
                       ppm=int(s.value("ppm", 0)), allow_client_ppm=self._bool("client_ppm", False),
-                      file=demo_file)
+                      file=demo_file, allow_tx=self._bool("allow_tx", False))
 
     def apply(self):
         c = self.relay.config
@@ -278,9 +284,10 @@ class Window(QMainWindow):
         c.ppm = self.ppm.value()
         c.allow_client_ppm = self.client_ppm.isChecked()
         if self.device.currentData() is not None:
-            c.device = int(self.device.currentData())
+            c.device = device_id(self.device.currentData())
+        c.allow_tx = self.allow_tx.isChecked()
         for key, value in (("name", c.name), ("password", c.password), ("ppm", c.ppm),
-                           ("client_ppm", c.allow_client_ppm), ("device", c.device),
+                           ("client_ppm", c.allow_client_ppm), ("device", c.device), ("allow_tx", c.allow_tx),
                            ("location", self.location.text().strip()), ("open_port", self.open_port.isChecked()),
                            ("listed", self.listed.isChecked()), ("port", self.port.value())):
             self.settings.setValue(key, value)
@@ -313,17 +320,27 @@ class Window(QMainWindow):
         self.device.blockSignals(True)
         self.device.clear()
         if self.relay.config.file:
-            self.device.addItem(f"Recording: {Path(self.relay.config.file).name}", 0)
+            self.device.addItem(f"Recording: {Path(self.relay.config.file).name}", "rtl:0")
             self.device_note.setText("Demonstration: playing a recording instead of a dongle.")
         else:
+            notes, found = [], []
             try:
-                found = devices()
-                for d in found:
-                    label = d["name"] + (f" (serial {d['serial']})" if d["serial"] else "")
-                    self.device.addItem(label, d["index"])
-                self.device_note.setText("" if found else "No RTL-SDR found. Plug it in and press Refresh.")
+                for d in devices():
+                    found.append(d)
+                    self.device.addItem(d["name"] + (f" (serial {d['serial']})" if d["serial"] else ""),
+                                        f"rtl:{d['index']}")
             except RtlError as e:
-                self.device_note.setText(html.escape(str(e)))
+                notes.append(str(e))
+            try:
+                from .hackrf import devices as hackrfs
+                for d in hackrfs():
+                    found.append(d)
+                    self.device.addItem(f"{d['name']} (serial {d['serial'][-8:]})", f"hackrf:{d['serial']}")
+            except RtlError as e:
+                notes.append(str(e))
+            if not found:
+                notes.insert(0, "No RTL-SDR or HackRF found. Plug one in and press Refresh.")
+            self.device_note.setText(html.escape(" ".join(notes)) if not found else "")
             i = self.device.findData(self.relay.config.device)
             if i >= 0:
                 self.device.setCurrentIndex(i)

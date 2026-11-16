@@ -84,7 +84,7 @@ def test_hello_auth_and_rtl_tcp_stream(relay):
     s, hello, ok = connect(relay, "secret")
     assert hello["relay"] == "sdr-tools-relay" and hello["name"] == "Test relay" and hello["password"]
     assert hello["version"] == "9.9" and len(hello["nonce"]) == 32 and not hello["busy"]
-    assert ok == {"ok": True, "ppm": -4}
+    assert ok == {"ok": True, "ppm": -4, "device": {"type": "rtl"}}
     head = read_exact(s, 12)
     assert head[:4] == b"RTL0" and struct.unpack(">II", head[4:]) == (5, 29)
     s.sendall(P.command(P.SET_RATE, 1000000) + P.command(P.SET_FREQ, 161975000)

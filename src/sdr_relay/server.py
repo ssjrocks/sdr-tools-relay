@@ -1,4 +1,5 @@
-"""The relay itself: accepts one client at a time and gives it the dongle over rtl_tcp."""
+"""The relay itself: accepts one client at a time and gives it the dongle over rtl_tcp (an RTL-SDR or a
+HackRF; a HackRF can also sweep, and transmit when its owner allows it)."""
 
 import collections
 import json
@@ -16,16 +17,23 @@ CLOSING_WAIT = 5.0             # s a new client waits for the previous one's don
 QUEUE_BUFFERS = 64            # ~1.5 s at 2.4 MS/s with 64 KB buffers; older data is dropped
 
 
+def device_id(device) -> str:
+    """"rtl:0", "hackrf:<serial>"; a bare number (what older relays saved) is an RTL-SDR's index."""
+    text = str(device).strip()
+    return f"rtl:{int(text)}" if text.lstrip("-").isdigit() else (text or "rtl:0")
+
+
 class Config:
-    def __init__(self, name="SDR relay", port=P.PORT, password="", device=0, ppm=0, allow_client_ppm=False,
-                 file=None):
+    def __init__(self, name="SDR relay", port=P.PORT, password="", device="rtl:0", ppm=0, allow_client_ppm=False,
+                 file=None, allow_tx=False):
         self.name = name
         self.port = port
         self.password = password
-        self.device = device
+        self.device = device_id(device)
         self.ppm = ppm
         self.allow_client_ppm = allow_client_ppm
         self.file = file                  # play this recording instead of a dongle
+        self.allow_tx = allow_tx          # a HackRF may transmit (and only for a client with the password)
 
 
 class Session:
@@ -63,18 +71,33 @@ class Relay:
 
     def describe_devices(self) -> list[dict]:
         if self.config.file:
-            return [{"index": 0, "name": f"Recording {self.config.file}"}]
+            return [{"index": 0, "id": "rtl:0", "type": "rtl", "name": f"Recording {self.config.file}"}]
+        out = []
         try:
             from .rtlsdr import devices
-            return [{"index": d["index"], "name": d["name"], "serial": d["serial"]} for d in devices()]
+            out += [{"index": d["index"], "id": f"rtl:{d['index']}", "type": "rtl", "name": d["name"],
+                     "serial": d["serial"]} for d in devices()]
         except RtlError:
-            return []
+            pass
+        try:
+            from .hackrf import devices as hackrfs
+            out += [{"index": d["index"], "id": f"hackrf:{d['serial']}", "type": "hackrf", "name": d["name"],
+                     "serial": d["serial"]} for d in hackrfs()]
+        except RtlError:
+            pass
+        return out
+
+    def features(self) -> list[str]:
+        f = ["check", "diagnose", "hackrf", "sweep"]
+        if self.config.allow_tx and self.config.password:
+            f.append("tx")
+        return f + (["update"] if self.on_update is not None else [])
 
     def hello(self, nonce="") -> dict:
         h = {"relay": "sdr-tools-relay", "protocol": P.PROTOCOL, "name": self.config.name, "version": self.version,
              "devices": self.describe_devices(), "password": bool(self.config.password),
              "busy": self.session is not None,
-             "features": ["check", "diagnose"] + (["update"] if self.on_update is not None else [])}
+             "features": self.features(), "device": self.config.device}
         if nonce:
             h["nonce"] = nonce
         return h
@@ -197,8 +220,10 @@ class Relay:
             self.note(f"{addr[0]} asked for a dongle check")
             if self.config.file:
                 return {"ok": True, "report": {"skipped": "playing a recording"}}
+            if device_id(self.config.device).startswith("hackrf:"):
+                return {"ok": True, "report": {"skipped": "the dongle check is for RTL-SDRs; this relay serves a HackRF"}}
             from .diagnose import run
-            report = run(self.config.device)
+            report = run(int(device_id(self.config.device).partition(":")[2] or 0))
             self.note("Dongle check: " + ", ".join(
                 f"{k} {v.get('bytes', 0) // 1000} kB" for k, v in report.items() if isinstance(v, dict)))
             return {"ok": True, "report": report}
@@ -224,26 +249,49 @@ class Relay:
         except ValueError:
             return None, b""
 
-    def _open(self):
+    def _open(self, device=None):
         if self.config.file:
             return FileDongle(self.config.file)
+        kind, _, which = device_id(device or self.config.device).partition(":")
+        if kind == "hackrf":
+            from .hackrf import HackRF
+            return HackRF(which)
         from .rtlsdr import Dongle
-        return Dongle(self.config.device)
+        return Dongle(int(which or 0))
 
     def _serve(self, conn, addr, reply, rest=b""):
         session = self.session
+        stream = reply.get("stream") or "iq"
+        if stream == "tx" and not (self.config.allow_tx and self.config.password):
+            conn.sendall(P.line({"ok": False, "error": "this relay doesn't allow transmitting (its owner can turn it "
+                                                      "on, with a password set)"}))
+            self.note(f"{addr[0]} asked to transmit: not allowed")
+            return
         try:
+            wanted = reply.get("device")
+            dongle = self.open_dongle(wanted) if wanted else self.open_dongle()
+        except TypeError:                                  # an opener that takes no device (tests)
             dongle = self.open_dongle()
         except RtlError as e:
             self.last_error = str(e)
             conn.sendall(P.line({"ok": False, "error": str(e)}))
             self.note(f"{addr[0]}: couldn't open the dongle: {e}")
             return
+        hackrf = getattr(dongle, "is_hackrf", False)
+        if stream in ("sweep", "tx") and not hackrf:
+            dongle.close()
+            conn.sendall(P.line({"ok": False, "error": f"only a HackRF can {'sweep' if stream == 'sweep' else 'transmit'}"}))
+            return
         try:
             self.last_error = ""
-            conn.sendall(P.line({"ok": True, "ppm": self.config.ppm}))
+            info = dongle.info() if hackrf else {"type": "rtl"}
             client = " ".join(str(x) for x in (reply.get("client") or "a client", reply.get("version")) if x)
-            self.note(f"{addr[0]} connected ({client})")
+            if stream == "sweep":
+                return self._sweep(conn, addr, reply, dongle, info, session, client)
+            if stream == "tx":
+                return self._transmit(conn, addr, reply, dongle, info, session, client)
+            conn.sendall(P.line({"ok": True, "ppm": self.config.ppm, "device": info}))
+            self.note(f"{addr[0]} connected ({client}){' to the HackRF' if hackrf else ''}")
             gains = dongle.gains()
             # rtl_tcp's defaults, until the client sets its own.
             dongle.call("set_sample_rate", 2048000)
@@ -288,7 +336,12 @@ class Relay:
                     pass
                 done.set()
 
-            dongle.start(on_data)
+            try:
+                dongle.start(on_data)
+            except RtlError as e:
+                self.last_error = str(e)
+                self.note(f"{addr[0]}: {e}")
+                return
 
             def no_samples_note():
                 if getattr(dongle, "no_samples", False) and not done.is_set():
@@ -331,10 +384,115 @@ class Relay:
                 self.last_error = str(e)
                 self.note(str(e))
 
+    def _sweep(self, conn, addr, reply, dongle, info, session, client):
+        """hackrf_sweep's raw transfers to the client, until it disconnects."""
+        ranges = [(int(a), int(b)) for a, b in (reply.get("ranges") or [[0, 6000]])][:10]
+        for key, name in (("amp", "set_amp_enable"), ("antenna", "set_antenna_enable")):
+            if reply.get(key) is not None:
+                dongle.call(name, int(bool(reply[key])))
+        sent = threading.Event()
+        q: collections.deque = collections.deque()
+        ready = threading.Condition()
+
+        def on_block(data):
+            with ready:
+                if len(q) >= QUEUE_BUFFERS:
+                    q.popleft()
+                    session.dropped += 1
+                q.append(data)
+                ready.notify()
+        try:
+            freqs = dongle.start_sweep(on_block, ranges, int(reply.get("lna", 16)), int(reply.get("vga", 20)))
+        except RtlError as e:
+            conn.sendall(P.line({"ok": False, "error": str(e)}))
+            self.note(f"{addr[0]}: couldn't sweep: {e}")
+            return
+        conn.sendall(P.line({"ok": True, "stream": "sweep", "ranges": freqs, "device": info}))
+        self.note(f"{addr[0]} sweeping {', '.join(f'{a}-{b}' for a, b in zip(freqs[::2], freqs[1::2]))} MHz ({client})")
+        session.freq, session.rate, session.gain = freqs[0] * 1_000_000, 20_000_000, "sweep"
+        conn.settimeout(None)
+
+        def watch():                                    # the client hanging up ends it
+            try:
+                while conn.recv(256):
+                    pass
+            except OSError:
+                pass
+            sent.set()
+            with ready:
+                ready.notify_all()
+        threading.Thread(target=watch, daemon=True, name="relay-sweep-watch").start()
+        try:
+            while not sent.is_set():
+                with ready:
+                    while not q and not sent.is_set():
+                        ready.wait(0.5)
+                    if sent.is_set():
+                        break
+                    data = q.popleft()
+                conn.sendall(data)
+                session.bytes += len(data)
+        except OSError:
+            pass
+        session.closing = True
+        dongle.stop()
+        self.note(f"{addr[0]} stopped sweeping after {time.time() - session.started:.0f} s")
+
+    def _transmit(self, conn, addr, reply, dongle, info, session, client):
+        """The client's signed 8-bit IQ out of the HackRF, until it disconnects."""
+        for key, name in (("rate", "set_sample_rate"), ("freq_hi", "set_freq_hi"), ("freq", "set_center_freq"),
+                          ("txvga", "set_txvga_gain"), ("filter", "set_baseband_filter")):
+            if reply.get(key) is not None:
+                dongle.call(name, int(reply[key]))
+        for key, name in (("amp", "set_amp_enable"), ("antenna", "set_antenna_enable")):
+            if reply.get(key) is not None:
+                dongle.call(name, int(bool(reply[key])))
+        try:
+            dongle.start_tx()
+        except RtlError as e:
+            conn.sendall(P.line({"ok": False, "error": str(e)}))
+            self.note(f"{addr[0]}: couldn't transmit: {e}")
+            return
+        conn.sendall(P.line({"ok": True, "stream": "tx", "device": info}))
+        session.freq, session.rate, session.gain = dongle.freq, dongle.rate, f"TX {dongle.txvga} dB"
+        self.note(f"{addr[0]} TRANSMITTING on {dongle.freq / 1e6:.4f} MHz at {dongle.rate / 1e6:g} MS/s ({client})")
+        conn.settimeout(None)
+        try:
+            while True:
+                chunk = conn.recv(1 << 16)
+                if not chunk:
+                    break
+                session.bytes += len(chunk)
+                if not dongle.send(chunk, timeout=5):
+                    break
+        except OSError:
+            pass
+        session.closing = True
+        dongle.stop()
+        self.note(f"{addr[0]} stopped transmitting after {time.time() - session.started:.0f} s"
+                  + (f" ({dongle.underruns} gaps: samples came too slowly)" if dongle.underruns else ""))
+
     def _command(self, dongle, session, gains, cmd, value):
-        if cmd == P.SET_FREQ:
+        if cmd == P.SET_FREQ_HI:
+            dongle.call("set_freq_hi", value)
+            session.freq_hi = value
+        elif cmd in (P.SET_LNA_GAIN, P.SET_VGA_GAIN):
+            dongle.call("set_lna_gain" if cmd == P.SET_LNA_GAIN else "set_vga_gain", value)
+            session.gain = f"LNA {dongle.lna} dB · VGA {dongle.vga} dB"
+        elif cmd == P.SET_AMP:
+            dongle.call("set_amp_enable", value)
+        elif cmd == P.SET_ANTENNA_POWER:
+            dongle.call("set_antenna_enable", value)
+        elif cmd == P.SET_BASEBAND_FILTER:
+            dongle.call("set_baseband_filter", value)
+        elif cmd == P.SET_CLKOUT:
+            dongle.call("set_clkout_enable", value)
+        elif cmd == P.SET_TXVGA_GAIN:
+            dongle.call("set_txvga_gain", value)
+        elif cmd == P.SET_FREQ:
             dongle.call("set_center_freq", value)
-            session.freq = value
+            session.freq = (getattr(session, "freq_hi", 0) << 32) | value
+            session.freq_hi = 0
         elif cmd == P.SET_RATE:
             # Not reset_buffer, as rtl_tcp: resetting a running async read stalls the stream.
             dongle.call("set_sample_rate", value)

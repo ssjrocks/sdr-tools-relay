@@ -32,6 +32,31 @@ jobs:
           Copy-Item build\rtlblog\x64\rtlsdr.dll, build\rtlblog\x64\pthreadVC2.dll, build\rtlblog\x64\msvcr100.dll, build\rtlblog\x64\rtl_sdr.exe build\dlls\
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: HackRF library (libhackrf 2024.02.1, built from its source with vcpkg's libusb and pthreads)
+        shell: pwsh
+        run: |
+          gh release download v2024.02.1 -R greatscottgadgets/hackrf -p hackrf-2024.02.1.zip -D build
+          $sha = (Get-FileHash build\hackrf-2024.02.1.zip -Algorithm SHA256).Hash.ToLower()
+          if ($sha -ne "f35f5f9ecb2776b99eb9ddbde794ae06cc469e2cd54f2d33b459b9d51b5c8d1f") { throw "hackrf-2024.02.1.zip checksum $sha" }
+          Expand-Archive build\hackrf-2024.02.1.zip build\hackrf-src
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install libusb:x64-windows pthreads:x64-windows
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg failed" }
+          $v = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
+          Get-ChildItem "$v\lib", "$v\bin" | Select-Object -ExpandProperty Name
+          $pthread = (Get-ChildItem "$v\lib" -Filter "pthreadVC*.lib" | Select-Object -First 1).FullName
+          cmake -S build\hackrf-src\hackrf-2024.02.1\host\libhackrf -B build\hackrf-build -G "Visual Studio 17 2022" -A x64 `
+            "-DLIBUSB_INCLUDE_DIR=$v\include\libusb-1.0" "-DLIBUSB_LIBRARIES=$v\lib\libusb-1.0.lib" `
+            "-DTHREADS_PTHREADS_INCLUDE_DIR=$v\include" "-DTHREADS_PTHREADS_WIN32_LIBRARY=$pthread"
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
+          cmake --build build\hackrf-build --config Release --target hackrf
+          if ($LASTEXITCODE -ne 0) { throw "libhackrf build failed" }
+          New-Item -ItemType Directory build\hackrf-dlls | Out-Null
+          Copy-Item (Get-ChildItem build\hackrf-build -Recurse -Filter hackrf.dll | Select-Object -First 1).FullName build\hackrf-dlls\
+          Copy-Item "$v\bin\libusb-1.0.dll" build\hackrf-dlls\
+          Copy-Item (Get-ChildItem "$v\bin" -Filter "pthreadVC*.dll").FullName build\hackrf-dlls\
+          Get-ChildItem build\hackrf-dlls
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: libwdi sources and support files (for wdi-simple, the WinUSB driver installer)
         shell: pwsh
         run: |
@@ -75,6 +100,7 @@ jobs:
         run: >
           pyinstaller --noconfirm --windowed --name "SDR Tools Relay" --icon build\icon.ico
           --paths src --add-binary "build\dlls\*.dll;rtlsdr" --add-binary "build\dlls\rtl_sdr.exe;rtlsdr" --add-binary "build\wdi\wdi-simple.exe;wdi"
+          --add-binary "build\hackrf-dlls\*.dll;hackrf"
           src\sdr_relay\__main__.py
       - name: Self-test of the build, including installing the WinUSB driver package
         shell: pwsh

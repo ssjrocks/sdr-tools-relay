@@ -12,6 +12,11 @@ power, baseband filter and clock out. It can also **sweep** (hackrf_sweep's fast
 for SDR Toolkit's survey) and, only if you allow it here and set a password, **transmit** what SDR
 Toolkit sends it. Transmitting needs a licence for the frequency.
 
+Before a HackRF's samples go out, the relay takes out its DC spike (the bright line at the centre of
+every view), narrows rates below the HackRF's 2 MS/s from a whole multiple (so only what the client
+needs crosses the network), and measures the input level over the whole band (power, peak and
+clipping), which SDR Toolkit's automatic gain works from. Sweeps are cut to the samples the FFT reads.
+
 The relay is a small window with a tray icon. It shows the dongle, who's connected, what they've
 tuned to and how fast the samples are flowing, with a **Disconnect** button.
 

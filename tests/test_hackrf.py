@@ -205,7 +205,8 @@ def test_relay_streams_a_hackrf_like_an_rtl_sdr(hackrf_relay, lib):
     assert ok["ok"] and ok["device"]["type"] == "hackrf" and ok["device"]["max_freq"] == 6_000_000_000
     head = read_exact(s, 12)
     assert head[:4] == b"RTL0" and struct.unpack(">II", head[4:]) == (100, 52)
-    s.sendall(P.command(P.SET_RATE, 10_000_000) + P.command(P.SET_FREQ_HI, 1) + P.command(P.SET_FREQ, 1_000_000_000)
+    s.sendall(P.command(P.SET_DC_BLOCK, 0)                  # the samples as they came, to check the flip
+              + P.command(P.SET_RATE, 10_000_000) + P.command(P.SET_FREQ_HI, 1) + P.command(P.SET_FREQ, 1_000_000_000)
               + P.command(P.SET_LNA_GAIN, 24) + P.command(P.SET_VGA_GAIN, 30) + P.command(P.SET_AMP, 1)
               + P.command(P.SET_ANTENNA_POWER, 1) + P.command(P.SET_BASEBAND_FILTER, 8_000_000))
     data = read_exact(s, 20000)
@@ -254,3 +255,58 @@ def test_relay_transmits_only_when_allowed(hackrf_relay, lib):
     assert ("set_freq", 433_920_000) in lib.calls and ("set_txvga_gain", 10) in lib.calls
     assert bytes([9, 8, 7, 6]) * 2 in bytes(lib.tx_out)
     assert any("TRANSMITTING" in text for _, text in hackrf_relay.events)
+
+
+def test_dc_spike_removed_and_low_rates_narrowed_at_the_relay(hackrf_relay, lib):
+    import numpy as np
+    # A constant offset (the HackRF's DC spike: I +40, Q -20) under a tone at a quarter of the rate.
+    tone = [(40 + 30, -20), (40, -20 + 30), (40 - 30, -20), (40, -20 - 30)] * 4096
+    lib.pattern = bytes(b & 0xFF for iq in tone for b in iq)          # signed 8-bit, as the HackRF sends
+    s, hello, ok = handshake(hackrf_relay, device="hackrf:abc")
+    assert {"narrow", "dc_block", "levels", "sweep_trim"} <= set(hello["features"])
+    read_exact(s, 12)
+    s.sendall(P.command(P.SET_RATE, 4_000_000))
+    time.sleep(0.5)
+    read_exact(s, 300000)                                              # what came before the new rate
+    x = np.frombuffer(read_exact(s, 131072), np.uint8).astype(float) - 128
+    assert abs(x[0::2].mean()) < 1.5 and abs(x[1::2].mean()) < 1.5    # the offset is gone
+    assert 20 < np.sqrt((x ** 2).mean() * 2) < 40                     # the tone isn't
+    # 250 kS/s: the HackRF samples at 2 MS/s (the smallest multiple it can) and the relay narrows it.
+    n = len(lib.calls)
+    s.sendall(P.command(P.SET_RATE, 250_000))
+    time.sleep(0.5)
+    assert ("set_sample_rate", 2_000_000.0) in lib.calls[n:]
+    sess = hackrf_relay.session
+    assert sess.rate == 250_000 and sess.device_rate == 2_000_000 and sess.decimate.k == 8
+    time.sleep(1.2)
+    q = socket.create_connection(("127.0.0.1", hackrf_relay.config.port), timeout=5)
+    h = read_line(q)
+    q.sendall(P.line({"client": "test", "stats": True, "auth": P.auth("secret", h["nonce"])}))
+    st = read_line(q)["stats"]
+    q.close()
+    assert st["narrow"] == 8 and st["device_rate"] == 2_000_000 and st["rate"] == 250_000 and st["dc_block"]
+    assert st["level"]["peak"] >= 60 and st["level"]["clipped"] == 0 and -12 < st["level"]["dbfs"] < 0
+    assert st["usb_lost"] == 0 and "get_m0_state" in names(lib.calls)      # hackrf_transfer -B's poll
+    s.close()
+
+
+def test_auto_filter_comes_back_while_receiving(lib):
+    d = H.HackRF("abc")
+    d.call("set_baseband_filter", 1_750_000)
+    d.start(lambda data: None)
+    d.call("set_sample_rate", 19_200_000)
+    n = len(lib.calls)
+    d.call("set_baseband_filter", 0)                   # automatic again: libhackrf's 0.75 x the rate
+    assert lib.calls[n:] == [("compute_baseband_filter_bw", 14_400_000), ("set_baseband_filter_bandwidth", 15_000_000)]
+    d.close()
+
+
+def test_sweep_blocks_trimmed_to_what_the_fft_reads(hackrf_relay, lib):
+    block = bytes([0x7F, 0x7F]) + (2_400_000_000).to_bytes(8, "little") + bytes(range(256)) * 63 + bytes(16384 - 10 - 256 * 63)
+    block = block[:16384 - 8] + bytes([1, 2, 3, 4, 5, 6, 7, 8])
+    lib.pattern = block * 16
+    s, _, ok = handshake(hackrf_relay, stream="sweep", ranges=[[2400, 2500]], fft_size=4)
+    assert ok["ok"]
+    got = read_exact(s, 18 * 16)
+    assert got[:18] == block[:10] + bytes([1, 2, 3, 4, 5, 6, 7, 8]) and got[18:36] == got[:18]
+    s.close()

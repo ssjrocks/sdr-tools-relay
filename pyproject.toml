@@ -5,7 +5,7 @@ description = "Lends this PC's RTL-SDR to SDR Toolkit over the LAN or the intern
 readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.11"
-dependencies = ["pyqt6>=6.5"]
+dependencies = ["pyqt6>=6.5", "numpy>=1.24"]
 
 [project.scripts]
 sdr-tools-relay = "sdr_relay.main:main"

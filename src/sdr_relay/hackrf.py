@@ -53,6 +53,16 @@ class Transfer(ctypes.Structure):
                 ("rx_ctx", ctypes.c_void_p), ("tx_ctx", ctypes.c_void_p)]
 
 
+class M0State(ctypes.Structure):
+    """hackrf_m0_state (hackrf.h): the M0 core's streaming loop; num_shortfalls counts the times the USB
+    side fell behind and samples were lost (an overrun, in receive)."""
+    _fields_ = [("requested_mode", ctypes.c_uint16), ("request_flag", ctypes.c_uint16),
+                ("active_mode", ctypes.c_uint32), ("m0_count", ctypes.c_uint32), ("m4_count", ctypes.c_uint32),
+                ("num_shortfalls", ctypes.c_uint32), ("longest_shortfall", ctypes.c_uint32),
+                ("shortfall_limit", ctypes.c_uint32), ("threshold", ctypes.c_uint32),
+                ("next_mode", ctypes.c_uint32), ("error", ctypes.c_uint32)]
+
+
 class DeviceList(ctypes.Structure):
     _fields_ = [("serial_numbers", ctypes.POINTER(ctypes.c_char_p)), ("usb_board_ids", ctypes.POINTER(ctypes.c_int)),
                 ("usb_device_index", ctypes.POINTER(ctypes.c_int)), ("devicecount", ctypes.c_int),
@@ -108,6 +118,7 @@ def _load():
         "board_partid_serialno_read": ([p, ctypes.POINTER(PartSerial)], i),
         "init_sweep": ([p, ctypes.POINTER(ctypes.c_uint16), i, u32, u32, u32, i], i),
         "start_rx_sweep": ([p, CALLBACK, p], i), "error_name": ([i], ctypes.c_char_p),
+        "get_m0_state": ([p, ctypes.POINTER(M0State)], i),
     }
     for name, (args, res) in sig.items():
         fn = getattr(lib, f"hackrf_{name}", None)
@@ -198,6 +209,10 @@ class HackRF:
         self._tx_queue: queue.Queue = queue.Queue(maxsize=64)
         self._tx_left = b""
         self.underruns = 0
+        self.shortfalls = None               # samples lost on the HackRF's USB side (its M0 state), while receiving
+        self._ctl = threading.RLock()        # one control request at a time (the stats poll runs alongside)
+        self._gen = 0
+        self._m0_ok = True
 
     # ---- what clients see ---------------------------------------------------------------------
 
@@ -239,6 +254,10 @@ class HackRF:
         return int(round(self.freq * (1 + self.ppm / 1e6)))      # the frequency correction, in software
 
     def call(self, name, *args) -> int:
+        with self._ctl:
+            return self._call(name, *args)
+
+    def _call(self, name, *args) -> int:
         lib, d = self.lib, self.dev
         live = self.mode in ("rx", "tx")
         if name == "set_center_freq":
@@ -290,8 +309,10 @@ class HackRF:
             return lib.hackrf_set_antenna_enable(d, self.antenna) if self.mode else 0
         if name == "set_baseband_filter":
             self.filter_bw = int(lib.hackrf_compute_baseband_filter_bw(int(args[0]))) if args[0] else 0
-            if self.mode == "rx" and self.filter_bw:
-                return lib.hackrf_set_baseband_filter_bandwidth(d, self.filter_bw)
+            if self.mode == "rx":
+                # Back to automatic: what libhackrf sets with each sample rate (0.75 x the rate).
+                bw = self.filter_bw or int(lib.hackrf_compute_baseband_filter_bw(int(0.75 * self.rate)))
+                return lib.hackrf_set_baseband_filter_bandwidth(d, bw)
             return 0
         if name == "set_clkout_enable":
             self.clkout = 1 if args[0] else 0
@@ -346,7 +367,28 @@ class HackRF:
         r |= lib.hackrf_start_rx(d, self._cb, None)
         self._check(r, "start receiving")
         self.mode = "rx"
+        self._gen += 1
         threading.Thread(target=self._watch, daemon=True, name="hackrf-watchdog").start()
+        threading.Thread(target=self._m0_loop, args=(self._gen,), daemon=True, name="hackrf-m0").start()
+
+    def _m0_loop(self, gen):
+        """hackrf_transfer -B: the M0 state once a second while receiving, for the samples lost on the
+        USB side. libhackrf refuses it (with no USB request) on firmware older than USB API 1.06."""
+        state = M0State()
+        fn = getattr(self.lib, "hackrf_get_m0_state", None)
+        while fn is not None and self._m0_ok:
+            threading.Event().wait(1.0)
+            if self.mode != "rx" or self._gen != gen:
+                return
+            with self._ctl:
+                if self.mode != "rx" or self._gen != gen:
+                    return
+                r = fn(self.dev, ctypes.byref(state))
+            if r != 0:
+                self._m0_ok = False
+                log.info("HackRF: no M0 state (%s): lost samples aren't counted", _err(self.lib, r))
+                return
+            self.shortfalls = int(state.num_shortfalls)
 
     def _watch(self):
         start = self.received
@@ -442,15 +484,17 @@ class HackRF:
             raise HackRFError(f"The HackRF couldn't {what}: {_err(self.lib, r)}")
 
     def stop(self):
-        mode, self.mode = self.mode, None
-        if mode in ("rx", "sweep"):
-            self.lib.hackrf_stop_rx(self.dev)
-        elif mode == "tx":
-            self.lib.hackrf_stop_tx(self.dev)
+        with self._ctl:
+            mode, self.mode = self.mode, None
+            if mode in ("rx", "sweep"):
+                self.lib.hackrf_stop_rx(self.dev)
+            elif mode == "tx":
+                self.lib.hackrf_stop_tx(self.dev)
 
     def close(self):
-        self.stop()
-        self.lib.hackrf_close(self.dev)
+        with self._ctl:
+            self.stop()
+            self.lib.hackrf_close(self.dev)
 
 
 def split_gain(tenths: int) -> tuple[int, int]:

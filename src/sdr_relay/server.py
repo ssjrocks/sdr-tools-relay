@@ -9,6 +9,7 @@ import socket
 import threading
 import time
 
+from . import dsp
 from . import protocol as P
 from .rtlsdr import FileDongle, RtlError
 
@@ -52,6 +53,13 @@ class Session:
         self.device = "rtl"
         self.device_bytes = 0        # from the device (its USB link)
         self._device_window: collections.deque = collections.deque()
+        # A HackRF's samples on the way out (dsp.py): DC spike removal, narrowing, the level.
+        self.device_rate = 0         # what the device samples at (rate x narrow)
+        self.dc = None               # a dsp.DCBlock while it's on
+        self.decimate = None         # a dsp.Decimator for a rate below the HackRF's 2 MS/s
+        self.level = None            # a dsp.Level, measured as the samples go out
+        self.level_last = None
+        self.dongle = None
 
     def device_arrived(self, n):
         now = time.monotonic()
@@ -71,10 +79,15 @@ class Session:
     def stats(self) -> dict:
         """The links, for a client's stats request: the device's (USB) and the network's, each against what
         the sample rate needs (2 bytes a sample), and what's been dropped."""
-        return {"device": self.device, "freq": self.freq, "rate": self.rate, "gain": self.gain,
-                "needed_bps": self.rate * 2, "device_bps": round(self.device_bps), "net_bps": round(self.rate_bps),
-                "device_bytes": self.device_bytes, "net_bytes": self.bytes, "dropped": self.dropped,
-                "seconds": round(time.time() - self.started, 1)}
+        out = {"device": self.device, "freq": self.freq, "rate": self.rate, "gain": self.gain,
+               "needed_bps": self.rate * 2, "device_bps": round(self.device_bps), "net_bps": round(self.rate_bps),
+               "device_bytes": self.device_bytes, "net_bytes": self.bytes, "dropped": self.dropped,
+               "seconds": round(time.time() - self.started, 1)}
+        if self.device == "hackrf":
+            d = self.decimate
+            out.update(device_rate=self.device_rate or self.rate, narrow=d.k if d else 1, dc_block=self.dc is not None,
+                       level=self.level_last, usb_lost=getattr(self.dongle, "shortfalls", None))
+        return out
 
 
 class Relay:
@@ -114,7 +127,7 @@ class Relay:
         return out
 
     def features(self) -> list[str]:
-        f = ["check", "diagnose", "hackrf", "sweep"]
+        f = ["check", "diagnose", "hackrf", "sweep", "narrow", "dc_block", "levels", "sweep_trim"]
         if self.config.allow_tx and self.config.password:
             f.append("tx")
         return f + (["update"] if self.on_update is not None else [])
@@ -343,6 +356,11 @@ class Relay:
             done = threading.Event()
 
             session.device = info.get("type", "rtl")
+            if hackrf:
+                session.dongle = dongle
+                session.dc = dsp.DCBlock()
+                session.level = dsp.Level()
+                session.device_rate = session.rate
 
             def on_data(data):
                 session.device_arrived(len(data))
@@ -363,6 +381,10 @@ class Relay:
                             if done.is_set():
                                 break
                             data = queue.popleft()
+                        if session.level is not None:
+                            data = self._process(session, data)
+                            if not data:
+                                continue
                         conn.sendall(data)
                         now = time.monotonic()
                         session.bytes += len(data)
@@ -423,9 +445,26 @@ class Relay:
                 self.last_error = str(e)
                 self.note(str(e))
 
+    @staticmethod
+    def _process(session, data: bytes) -> bytes:
+        """A HackRF buffer on its way out (in the sending thread, so the USB callback never waits): measured,
+        the DC spike taken out, narrowed."""
+        session.level(data)
+        now = time.monotonic()
+        if now - getattr(session, "_level_t", 0) >= 1.0:
+            session._level_t = now
+            session.level_last = session.level.take()
+        dc, dec = session.dc, session.decimate
+        if dc is not None:
+            data = dc(data, session.device_rate or session.rate)
+        if dec is not None:
+            data = dec(data)
+        return data
+
     def _sweep(self, conn, addr, reply, dongle, info, session, client):
         """hackrf_sweep's raw transfers to the client, until it disconnects."""
         ranges = [(int(a), int(b)) for a, b in (reply.get("ranges") or [[0, 6000]])][:10]
+        fft_size = max(0, min(int(reply.get("fft_size") or 0), dsp.SWEEP_BLOCK // 2 - 5))
         for key, name in (("amp", "set_amp_enable"), ("antenna", "set_antenna_enable")):
             if reply.get(key) is not None:
                 dongle.call(name, int(bool(reply[key])))
@@ -472,6 +511,8 @@ class Relay:
                     if sent.is_set():
                         break
                     data = q.popleft()
+                if fft_size:
+                    data = dsp.trim_sweep(data, fft_size)
                 conn.sendall(data)
                 session.bytes += len(data)
         except OSError:
@@ -535,6 +576,15 @@ class Relay:
             dongle.call("set_center_freq", value)
             session.freq = (getattr(session, "freq_hi", 0) << 32) | value
             session.freq_hi = 0
+        elif cmd == P.SET_RATE and getattr(dongle, "is_hackrf", False):
+            # Below the HackRF's 2 MS/s: sample at a whole multiple and filter it down here.
+            from .hackrf import MIN_RATE
+            k = dsp.narrowing(value, MIN_RATE)
+            if dongle.call("set_sample_rate", value * k) == 0:
+                session.decimate = dsp.Decimator(k) if k > 1 else None
+                session.rate, session.device_rate = value, value * k
+        elif cmd == P.SET_DC_BLOCK:
+            session.dc = dsp.DCBlock() if value and getattr(dongle, "is_hackrf", False) else None
         elif cmd == P.SET_RATE:
             # Not reset_buffer, as rtl_tcp: resetting a running async read stalls the stream.
             dongle.call("set_sample_rate", value)

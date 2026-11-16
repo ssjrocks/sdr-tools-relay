@@ -31,6 +31,13 @@ def run(out_path, driver_test=False) -> int:
             results["libhackrf"] = True
         except Exception as e:
             results["libhackrf"] = f"failed: {e}"
+        # The HackRF's sample processing (numpy, bundled): DC spike out, narrowed, measured.
+        from . import dsp
+        block = bytes(range(256)) * 512
+        narrowed = dsp.Decimator(8)(dsp.DCBlock()(block, 2_000_000))
+        lv = dsp.Level()
+        lv(block)
+        results["dsp"] = len(narrowed) > 0 and lv.take() is not None
         rec = Path(tempfile.mkdtemp()) / "test.cu8"
         rec.write_bytes(bytes(range(256)) * 1024)
         s = socket.socket()
@@ -77,7 +84,7 @@ def run(out_path, driver_test=False) -> int:
                 results["driver"] = f"failed: {e}"
     except Exception:
         results["error"] = traceback.format_exc()
-    ok = results.get("librtlsdr") is True and all(results.get(k) for k in ("auth", "header", "samples"))
+    ok = results.get("librtlsdr") is True and all(results.get(k) for k in ("auth", "header", "samples", "dsp"))
     if getattr(sys, "frozen", False):
         ok = ok and results.get("libhackrf") is True          # the build bundles it
     if getattr(sys, "frozen", False) and sys.platform == "win32":

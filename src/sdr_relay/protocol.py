@@ -34,16 +34,25 @@ own choice is used. The "ok" answer then carries "device": what it is ({"type": 
 A HackRF (features "hackrf"):
 - streams like an RTL-SDR (step 4): rtl_tcp's tuner type is 100; its 52 gain steps are every LNA +
   VGA total, 0-102 dB in 2 dB; the bias tee is antenna power; sample rates are 2-20 MS/s (a client
-  that wants less asks for a whole multiple and filters it down itself). Its own commands:
+  that wants less asks for a whole multiple and filters it down itself; from relay 0.3.0, features
+  "narrow", it may ask for any rate: the relay samples at a whole multiple of 2 MS/s or more and
+  filters it down). Its own commands:
   SET_FREQ_HI (0x40, the upper 32 bits of the next SET_FREQ: frequencies to 6 GHz), SET_LNA_GAIN
   (0x41, dB 0-40), SET_VGA_GAIN (0x42, dB 0-62), SET_AMP (0x43, RF amp 0/1), SET_ANTENNA_POWER
   (0x44, 0/1), SET_BASEBAND_FILTER (0x45, Hz, 0 = automatic), SET_CLKOUT (0x46, 0/1),
-  SET_TXVGA_GAIN (0x47, dB 0-47, for transmitting).
+  SET_TXVGA_GAIN (0x47, dB 0-47, for transmitting), SET_DC_BLOCK (0x48, 0/1: features "dc_block",
+  on unless turned off: the HackRF's DC spike at the centre taken out before the samples are sent).
+- the stats answer (above) adds, for a HackRF (features "levels"): "level" {"dbfs" (average power,
+  hackrf_transfer's dB full scale), "peak" (0-128), "clipped" (the share of samples at the ADC's
+  limit)} over the last second of the full-rate samples, "usb_lost" (the HackRF's own count of
+  overruns, when its firmware reports them), "device_rate" (what it samples at) and "narrow" (the
+  decimation to the client's rate).
 - sweeps (features "sweep"): {"stream": "sweep", "ranges": [[lo_mhz, hi_mhz], ...] (up to 10),
   "lna", "vga", "amp", "antenna"} gets {"ok": true, "stream": "sweep", "ranges": [lo, hi, ...]}
   (rounded up to 20 MHz steps, as hackrf_sweep does), then hackrf_sweep's raw transfers: 16384-byte
   blocks, each 0x7F 0x7F, the block's frequency in Hz (u64, little-endian) and signed 8-bit IQ.
-  The client does the FFTs.
+  The client does the FFTs. With "fft_size": N (features "sweep_trim"), each block is cut to its
+  header and its last N samples, all hackrf_sweep's FFT reads (10 + 2N bytes).
 - transmits (features "tx", only when the relay's owner allows it, and only with a password):
   {"stream": "tx", "freq", "rate", "txvga", "amp", "antenna", "filter"} gets {"ok": true, "stream":
   "tx"}; then everything the client sends is signed 8-bit IQ to transmit, until it disconnects.
@@ -70,14 +79,14 @@ SET_FREQ, SET_RATE, SET_GAIN_MODE, SET_GAIN, SET_PPM, SET_IF_GAIN, SET_TEST_MODE
     SET_DIRECT_SAMPLING, SET_OFFSET_TUNING, SET_RTL_XTAL, SET_TUNER_XTAL, SET_GAIN_INDEX, SET_BIAS_TEE = range(1, 15)
 # HackRF commands (see above)
 SET_FREQ_HI, SET_LNA_GAIN, SET_VGA_GAIN, SET_AMP, SET_ANTENNA_POWER, SET_BASEBAND_FILTER, SET_CLKOUT, \
-    SET_TXVGA_GAIN = range(0x40, 0x48)
+    SET_TXVGA_GAIN, SET_DC_BLOCK = range(0x40, 0x49)
 NAMES = {SET_FREQ: "frequency", SET_RATE: "sample rate", SET_GAIN_MODE: "gain mode", SET_GAIN: "gain",
          SET_PPM: "frequency correction", SET_IF_GAIN: "IF gain", SET_TEST_MODE: "test mode", SET_AGC: "AGC",
          SET_DIRECT_SAMPLING: "direct sampling", SET_OFFSET_TUNING: "offset tuning", SET_RTL_XTAL: "RTL crystal",
          SET_TUNER_XTAL: "tuner crystal", SET_GAIN_INDEX: "gain step", SET_BIAS_TEE: "bias tee",
          SET_FREQ_HI: "frequency (upper bits)", SET_LNA_GAIN: "LNA gain", SET_VGA_GAIN: "VGA gain",
          SET_AMP: "RF amp", SET_ANTENNA_POWER: "antenna power", SET_BASEBAND_FILTER: "baseband filter",
-         SET_CLKOUT: "clock out", SET_TXVGA_GAIN: "TX gain"}
+         SET_CLKOUT: "clock out", SET_TXVGA_GAIN: "TX gain", SET_DC_BLOCK: "DC spike removal"}
 
 
 def auth(password: str, nonce: str) -> str:

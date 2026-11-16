@@ -465,6 +465,7 @@ class Relay:
         """hackrf_sweep's raw transfers to the client, until it disconnects."""
         ranges = [(int(a), int(b)) for a, b in (reply.get("ranges") or [[0, 6000]])][:10]
         fft_size = max(0, min(int(reply.get("fft_size") or 0), dsp.SWEEP_BLOCK // 2 - 5))
+        window: collections.deque = collections.deque()          # what went out, the last 2 s (the stats' rate)
         for key, name in (("amp", "set_amp_enable"), ("antenna", "set_antenna_enable")):
             if reply.get(key) is not None:
                 dongle.call(name, int(bool(reply[key])))
@@ -515,6 +516,11 @@ class Relay:
                     data = dsp.trim_sweep(data, fft_size)
                 conn.sendall(data)
                 session.bytes += len(data)
+                now = time.monotonic()
+                window.append((now, len(data)))
+                while window and now - window[0][0] > 2:
+                    window.popleft()
+                session.rate_bps = sum(n for _, n in window) / max(now - window[0][0], 0.5)
         except OSError:
             pass
         session.closing = True

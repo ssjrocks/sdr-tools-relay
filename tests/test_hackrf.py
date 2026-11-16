@@ -269,7 +269,7 @@ def test_dc_spike_removed_and_low_rates_narrowed_at_the_relay(hackrf_relay, lib)
     time.sleep(0.5)
     read_exact(s, 300000)                                              # what came before the new rate
     x = np.frombuffer(read_exact(s, 131072), np.uint8).astype(float) - 128
-    assert abs(x[0::2].mean()) < 1.5 and abs(x[1::2].mean()) < 1.5    # the offset is gone
+    assert abs(x[0::2].mean()) < 0.1 and abs(x[1::2].mean()) < 0.1    # the offset is gone, not left at half a step
     assert 20 < np.sqrt((x ** 2).mean() * 2) < 40                     # the tone isn't
     # 250 kS/s: the HackRF samples at 2 MS/s (the smallest multiple it can) and the relay narrows it.
     n = len(lib.calls)
@@ -309,4 +309,6 @@ def test_sweep_blocks_trimmed_to_what_the_fft_reads(hackrf_relay, lib):
     assert ok["ok"]
     got = read_exact(s, 18 * 16)
     assert got[:18] == block[:10] + bytes([1, 2, 3, 4, 5, 6, 7, 8]) and got[18:36] == got[:18]
+    time.sleep(0.5)
+    assert hackrf_relay.session.rate_bps > 0                         # the network meter's figure, sweeping too
     s.close()

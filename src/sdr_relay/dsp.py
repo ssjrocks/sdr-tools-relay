@@ -12,21 +12,30 @@ def _iq(data: bytes) -> np.ndarray:
     return u[0::2] + 1j * u[1::2]
 
 
-def _cu8(x: np.ndarray) -> bytes:
+def _cu8(x: np.ndarray, rng=None) -> bytes:
+    """Back to unsigned 8-bit; with *rng*, dithered (half a step either way, at random) so rounding keeps the
+    mean: the samples came in as whole numbers, and a fractional shift of whole numbers rounds them all the
+    same way."""
     b = np.empty(2 * len(x), np.uint8)
-    b[0::2] = np.clip(np.rint(x.real + 128.0), 0, 255)
-    b[1::2] = np.clip(np.rint(x.imag + 128.0), 0, 255)
+    re, im = x.real + 128.0, x.imag + 128.0
+    if rng is not None:
+        d = rng.random((2, len(x)), np.float32) - 0.5
+        re, im = re + d[0], im + d[1]
+    b[0::2] = np.clip(np.rint(re), 0, 255)
+    b[1::2] = np.clip(np.rint(im), 0, 255)
     return b.tobytes()
 
 
 class DCBlock:
     """The HackRF's DC spike (its local oscillator leaking through, a constant offset on I and Q): the
     offset is followed slowly (about 0.1 s) and taken off, so only a few hertz at the centre go with it.
-    Noise of a few counts dithers the rounding back to 8 bits, so no offset is left over."""
+    The samples are whole numbers, so rounding back to 8 bits is dithered: without it every sample rounds
+    the same way and up to half a step of offset is left (a spike 8 dB tall on a real HackRF)."""
 
     def __init__(self, seconds=0.1):
         self.seconds = seconds
         self.dc = None
+        self.rng = np.random.default_rng()
 
     def __call__(self, data: bytes, rate: int) -> bytes:
         n = len(data) // 2 * 2
@@ -36,7 +45,7 @@ class DCBlock:
         m = complex(x.mean())
         a = min(1.0, len(x) / max(rate * self.seconds, 1.0))
         self.dc = m if self.dc is None else self.dc + a * (m - self.dc)
-        return _cu8(x - self.dc) + data[n:]
+        return _cu8(x - self.dc, self.rng) + data[n:]
 
 
 class Decimator:

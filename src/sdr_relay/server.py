@@ -47,8 +47,34 @@ class Session:
         self.freq = 0
         self.rate = 0
         self.gain = "auto"
-        self.rate_bps = 0.0          # recent bytes per second
+        self.rate_bps = 0.0          # recent bytes per second (to the client)
         self.closing = False         # the client has gone; the dongle is being closed
+        self.device = "rtl"
+        self.device_bytes = 0        # from the device (its USB link)
+        self._device_window: collections.deque = collections.deque()
+
+    def device_arrived(self, n):
+        now = time.monotonic()
+        self.device_bytes += n
+        w = self._device_window
+        w.append((now, n))
+        while w and now - w[0][0] > 2:
+            w.popleft()
+
+    @property
+    def device_bps(self) -> float:
+        w = self._device_window
+        if not w:
+            return 0.0
+        return sum(n for _, n in w) / max(time.monotonic() - w[0][0], 0.5)
+
+    def stats(self) -> dict:
+        """The links, for a client's stats request: the device's (USB) and the network's, each against what
+        the sample rate needs (2 bytes a sample), and what's been dropped."""
+        return {"device": self.device, "freq": self.freq, "rate": self.rate, "gain": self.gain,
+                "needed_bps": self.rate * 2, "device_bps": round(self.device_bps), "net_bps": round(self.rate_bps),
+                "device_bytes": self.device_bytes, "net_bytes": self.bytes, "dropped": self.dropped,
+                "seconds": round(time.time() - self.started, 1)}
 
 
 class Relay:
@@ -157,6 +183,13 @@ class Relay:
             busy = self.session is not None
             conn.sendall(P.line(self.hello(nonce)))
             if busy:
+                # Only a stats request (with the password) is answered while someone is connected.
+                conn.settimeout(2)
+                reply, _ = self._read_line(conn)
+                session = self.session
+                if reply and reply.get("stats") and P.check(self.config.password, nonce, reply.get("auth", "")) \
+                        and session is not None:
+                    conn.sendall(P.line({"ok": True, "stats": session.stats()}))
                 return
             reply, rest = self._read_line(conn)
             if reply is None:
@@ -171,6 +204,9 @@ class Relay:
             if reply.get("diagnose"):
                 conn.settimeout(120)
                 conn.sendall(P.line(self._diagnose_request(addr)))
+                return
+            if reply.get("stats"):
+                conn.sendall(P.line({"ok": True, "stats": None}))          # nobody is connected
                 return
             if reply.get("check"):
                 # Only checking the password (SDR Toolkit's Connect): don't open the dongle.
@@ -306,7 +342,10 @@ class Relay:
             ready = threading.Condition()
             done = threading.Event()
 
+            session.device = info.get("type", "rtl")
+
             def on_data(data):
+                session.device_arrived(len(data))
                 with ready:
                     if len(queue) >= QUEUE_BUFFERS:
                         queue.popleft()
@@ -394,7 +433,10 @@ class Relay:
         q: collections.deque = collections.deque()
         ready = threading.Condition()
 
+        session.device = "hackrf"
+
         def on_block(data):
+            session.device_arrived(len(data))
             with ready:
                 if len(q) >= QUEUE_BUFFERS:
                     q.popleft()

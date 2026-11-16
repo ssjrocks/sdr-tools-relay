@@ -15,6 +15,11 @@ TCP, default port 47320:
    With "update": true (when the hello's "features" has "update") the relay looks for a newer
    release and, if there is one, answers {"ok": true, "updating": "<version>"}, closes, and
    installs it (then restarts). Only with the password: a relay without one refuses.
+   With "stats": true (password only) the relay answers {"ok": true, "stats": {...}} and closes, even
+   while someone is connected (then the hello says busy, and this is the only request it answers):
+   {"device", "freq", "rate", "gain", "needed_bps" (2 bytes a sample), "device_bps" (from the device,
+   its USB link), "net_bps" (to the client), "device_bytes", "net_bytes", "dropped", "seconds"}, or
+   null when nobody is. The client times it for the network's round trip.
    With "diagnose": true (also password only) the relay tries each way of reading its dongle
    for 2 s and answers {"ok": true, "report": {...}} (see diagnose.py); it takes ~20 s.
 4. From then on it's rtl_tcp: the relay sends "RTL0", the tuner type and the number of

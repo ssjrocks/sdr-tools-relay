@@ -217,6 +217,19 @@ def test_relay_streams_a_hackrf_like_an_rtl_sdr(hackrf_relay, lib):
     assert ("set_baseband_filter_bandwidth", 8_000_000) in calls and ("set_sample_rate", 10_000_000.0) in calls
     sess = hackrf_relay.session
     assert sess.freq == 5_294_967_296 and sess.gain == "LNA 24 dB · VGA 30 dB"
+    # A stats request while it's in use: the links' rates, against what the sample rate needs.
+    q = socket.create_connection(("127.0.0.1", hackrf_relay.config.port), timeout=5)
+    hello = read_line(q)
+    assert hello["busy"]
+    q.sendall(P.line({"client": "test", "stats": True, "auth": P.auth("secret", hello["nonce"])}))
+    st = read_line(q)["stats"]
+    assert st["device"] == "hackrf" and st["rate"] == 10_000_000 and st["needed_bps"] == 20_000_000
+    assert st["device_bps"] > 0 and st["device_bytes"] > 0 and st["freq"] == 5_294_967_296
+    q.close()
+    q = socket.create_connection(("127.0.0.1", hackrf_relay.config.port), timeout=5)   # without the password: nothing
+    hello = read_line(q)
+    q.sendall(P.line({"client": "test", "stats": True, "auth": "wrong"}))
+    assert q.recv(100) == b""
     s.close()
 
 

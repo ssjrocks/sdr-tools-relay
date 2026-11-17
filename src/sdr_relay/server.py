@@ -26,8 +26,9 @@ def device_id(device) -> str:
 
 class Config:
     def __init__(self, name="SDR relay", port=P.PORT, password="", device="rtl:0", ppm=0, allow_client_ppm=False,
-                 file=None, allow_tx=False):
+                 file=None, allow_tx=False, host="0.0.0.0"):
         self.name = name
+        self.host = host                  # where it listens: every interface, or 127.0.0.1 (SDR Toolkit's built-in one)
         self.port = port
         self.password = password
         self.device = device_id(device)
@@ -150,7 +151,8 @@ class Relay:
     def start(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("0.0.0.0", self.config.port))
+        s.bind((self.config.host, self.config.port))
+        self.config.port = s.getsockname()[1]           # port 0: whichever was free
         s.listen(4)
         s.settimeout(0.5)
         self._sock = s

@@ -268,7 +268,7 @@ def test_dc_spike_removed_and_low_rates_narrowed_at_the_relay(hackrf_relay, lib)
     s.sendall(P.command(P.SET_RATE, 4_000_000))
     time.sleep(0.5)
     read_exact(s, 300000)                                              # what came before the new rate
-    x = np.frombuffer(read_exact(s, 131072), np.uint8).astype(float) - 128
+    x = np.frombuffer(read_exact(s, 131072), np.uint8).astype(float) - 127.5     # where rtl_tcp's clients put zero
     assert abs(x[0::2].mean()) < 0.1 and abs(x[1::2].mean()) < 0.1    # the offset is gone, not left at half a step
     assert 20 < np.sqrt((x ** 2).mean() * 2) < 40                     # the tone isn't
     # 250 kS/s: the HackRF samples at 2 MS/s (the smallest multiple it can) and the relay narrows it.

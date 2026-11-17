@@ -7,8 +7,12 @@ import math
 import numpy as np
 
 
+ZERO = 127.5                       # rtl_tcp's clients take 127.5 as zero (an RTL-SDR's ADC centre); the HackRF's
+                                   # flipped samples sit on 128, half a step off: a DC spike of their own
+
+
 def _iq(data: bytes) -> np.ndarray:
-    u = np.frombuffer(data, np.uint8).astype(np.float32) - 128.0
+    u = np.frombuffer(data, np.uint8).astype(np.float32) - ZERO
     return u[0::2] + 1j * u[1::2]
 
 
@@ -17,7 +21,7 @@ def _cu8(x: np.ndarray, rng=None) -> bytes:
     mean: the samples came in as whole numbers, and a fractional shift of whole numbers rounds them all the
     same way."""
     b = np.empty(2 * len(x), np.uint8)
-    re, im = x.real + 128.0, x.imag + 128.0
+    re, im = x.real + ZERO, x.imag + ZERO
     if rng is not None:
         d = rng.random((2, len(x)), np.float32) - 0.5
         re, im = re + d[0], im + d[1]
@@ -28,7 +32,8 @@ def _cu8(x: np.ndarray, rng=None) -> bytes:
 
 class DCBlock:
     """The HackRF's DC spike (its local oscillator leaking through, a constant offset on I and Q): the
-    offset is followed slowly (about 0.1 s) and taken off, so only a few hertz at the centre go with it.
+    offset is followed slowly (about 0.1 s) and taken off, so only a few hertz at the centre go with it,
+    leaving the samples centred where the clients take zero to be (127.5, not the HackRF's 128).
     The samples are whole numbers, so rounding back to 8 bits is dithered: without it every sample rounds
     the same way and up to half a step of offset is left (a spike 8 dB tall on a real HackRF)."""
 

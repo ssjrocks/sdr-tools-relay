@@ -55,7 +55,8 @@ class DCBlock:
 
 class Decimator:
     """IQ at 1/k the rate: a windowed-sinc low-pass (to 0.8 of the new Nyquist), then every k-th sample,
-    carrying the filter's history and phase from one block to the next."""
+    carrying the filter's history and phase from one block to the next. Rounding back to 8 bits is
+    dithered: the filter smooths a quiet input to values near x.5, which would all round the same way."""
 
     def __init__(self, k: int):
         self.k = k
@@ -67,6 +68,7 @@ class Decimator:
         self.hist = np.zeros(n - 1, np.complex64)
         self.phase = 0                   # where the next output falls in the next block
         self.odd = b""
+        self.rng = np.random.default_rng()
 
     def __call__(self, data: bytes) -> bytes:
         data = self.odd + data
@@ -85,7 +87,7 @@ class Decimator:
         y = np.zeros(len(idx), np.complex64)
         for i, h in enumerate(self.taps):                       # tap by tap: no taps x outputs copy
             y += h * x[idx + i]
-        return _cu8(y)
+        return _cu8(y, self.rng)
 
 
 def narrowing(rate: int, minimum: int) -> int:

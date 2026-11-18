@@ -17,6 +17,8 @@ every view), narrows rates below the HackRF's 2 MS/s from a whole multiple (so o
 needs crosses the network), and measures the input level over the whole band (power, peak and
 clipping), which SDR Toolkit's automatic gain works from. Sweeps are cut to the samples the FFT reads.
 
+![The relay's window: the radio it lends, its settings and who's connected](docs/screenshots/relay.webp)
+
 The relay is a small window with a tray icon. It shows the dongle, who's connected, what they've
 tuned to and how fast the samples are flowing, with a **Disconnect** button.
 

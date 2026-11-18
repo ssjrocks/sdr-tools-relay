@@ -83,6 +83,8 @@ results["saved"] = QSettings("ssjrocks", "sdr-tools-relay").value("name") == "Sh
 win.autostart.setChecked(True)
 results["autostart"] = (Path(home) / "config/autostart/sdr-tools-relay.desktop").exists()
 win.autostart.setChecked(False)
+if len(sys.argv) > 1:                             # a screenshot (the README's), before the update below
+    win.grab().save(sys.argv[1])
 # Update asked for by a client with the password: the window installs it and restarts.
 installed, restarted = [], []
 updater.check = lambda: updater.Update("9.9.9", "https://api.github.com/repos/ssjrocks/sdr-tools-relay/releases/assets/1",
@@ -104,8 +106,6 @@ for _ in range(40):
     time.sleep(0.05)
 results["remote_update"] = ("update" in h["features"] and json.loads(answer) == {"ok": True, "updating": "9.9.9"}
                             and installed == ["9.9.9"] and restarted == [1])
-if len(sys.argv) > 1:
-    win.grab().save(sys.argv[1])
 win.quit()
 print(results, "errors:", len(errors))
 ok = all(results.values()) and not errors

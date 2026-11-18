@@ -1,9 +1,9 @@
 # SDR Tools Relay
 
-Lends the RTL-SDR plugged into this PC (Windows or Linux) to
+Lends the RTL-SDR or HackRF plugged into this PC (Windows or Linux) to
 [SDR Toolkit](https://github.com/ssjrocks/sdr-toolkit) on another PC: on the same network, or
-over the internet. SDR Toolkit's **Connect relay…** finds it, takes control of the dongle (frequency,
-sample rate, gain) and receives its samples, and every RTL-SDR mode (ADS-B, AIS, ISM, LoRa,
+over the internet. SDR Toolkit's **Connect relay…** finds it, takes control of the radio (frequency,
+sample rate, gain) and receives its samples, and every SDR mode (ADS-B, AIS, ISM, LoRa,
 DMR/P25, GPS) then runs on it as if it were plugged in locally.
 
 It lends a **HackRF One** the same way. SDR Toolkit drives it like an RTL-SDR (any mode works through

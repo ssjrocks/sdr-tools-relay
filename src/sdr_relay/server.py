@@ -166,6 +166,11 @@ class Relay:
         if self._sock is not None:
             self._sock.close()
             self._sock = None
+        # Wait for the client's thread to close the SDR: a program quitting while it's still inside libhackrf
+        # or librtlsdr crashed Python on its way out (a segfault in the "relay-client" thread).
+        for t in list(getattr(self, "_threads", [])):
+            if t is not threading.current_thread():
+                t.join(5)
 
     def disconnect(self):
         with self._lock:
@@ -184,7 +189,9 @@ class Relay:
                 continue
             except OSError:
                 break
-            threading.Thread(target=self._handle, args=(conn, addr), daemon=True, name="relay-client").start()
+            t = threading.Thread(target=self._handle, args=(conn, addr), daemon=True, name="relay-client")
+            self._threads = [x for x in getattr(self, "_threads", []) if x.is_alive()] + [t]
+            t.start()
 
     def _handle(self, conn, addr):
         conn.settimeout(10)
